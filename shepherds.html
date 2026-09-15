@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>The 99 — Shepherds</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#3B2A1A">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="The 99">
+<link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+<link rel="icon" href="assets/icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/the99.css">
+</head>
+<body class="page-shepherds">
+
+<div class="gate" id="gate" hidden>
+  <div class="gate-emblem">🐑</div>
+  <div class="gate-brand">The 99</div>
+  <div class="gate-sub">Shepherd Report</div>
+  <div class="gate-verse" id="gate-verse"></div>
+  <div class="gate-ref"   id="gate-ref"></div>
+  <div class="gate-btn-wrap" id="gsi-button"></div>
+  <p class="gate-note">Sign in with the Google account registered on the Servants sheet.</p>
+  <p class="gate-error" id="gate-error" hidden></p>
+</div>
+
+<div id="app" hidden>
+
+  <div class="offline-bar" id="offlineBar" hidden>⚠ You are offline</div>
+
+  <div class="header compact">
+    <div class="header-tools" id="header-tools"></div>
+    <div class="header-emblem">🐑</div>
+    <div class="header-brand">The 99</div>
+    <div class="header-sub">Shepherd Report</div>
+    <nav class="nav" id="nav" hidden></nav>
+  </div>
+
+  <div class="main" id="main">
+    <div class="loading-screen">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">Gathering the shepherds…</div>
+    </div>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="assets/the99.js"></script>
+<script>
+(function () {
+  requireServant({ leaderOnly: true }).then(function () {
+    api('dashboard').then(buildPage).catch(function (err) {
+      document.getElementById('main').innerHTML =
+        '<div class="empty-state"><div class="icon">⚠️</div><p>' + escHtml(err.message) + '</p></div>';
+    });
+  });
+
+  function buildPage(data) {
+    var main = document.getElementById('main');
+    var youth     = data.youths   || [];
+    var followups = (data.followUps || []).filter(isSuccessful);
+
+    main.innerHTML = '';
+
+    /* ── OVERALL SUMMARY ── */
+    var totalOk = 0, totalWarn = 0, totalLate = 0;
+    youth.forEach(function (y) {
+      var s = flockState(daysSince(y.Latest_Followup));
+      if (s === 'late') totalLate++; else if (s === 'warn') totalWarn++; else totalOk++;
+    });
+
+    appendSection(main, 'Overall Flock');
+    var g1 = el('div', 'stat-grid three');
+    g1.innerHTML = statCard('ok',   totalOk,   'In the Fold') +
+                   statCard('warn', totalWarn, 'Wandering')   +
+                   statCard('late', totalLate, 'Lost Sheep');
+    main.appendChild(g1);
+
+    var g2 = el('div', 'stat-grid');
+    g2.innerHTML = statCard('dark', youth.length,     'Total Shabab') +
+                   statCard('dark', followups.length, 'Reach-Outs');
+    main.appendChild(g2);
+
+    /* ── BUILD SERVANT MAP ── */
+    var sMap = {};
+    function slot(name) {
+      if (!sMap[name]) sMap[name] = { ok: 0, warn: 0, late: 0, logs: 0 };
+      return sMap[name];
+    }
+    youth.forEach(function (y) {
+      var s = slot(y.Servant_Name || 'Unassigned');
+      var st = flockState(daysSince(y.Latest_Followup));
+      if (st === 'late') s.late++; else if (st === 'warn') s.warn++; else s.ok++;
+    });
+    followups.forEach(function (f) {
+      slot(f.Servant_Name || 'Unassigned').logs++;
+    });
+
+    /* sort: highest % in fold first */
+    var servants = Object.keys(sMap).sort(function (a, b) {
+      var ta = sMap[a].ok + sMap[a].warn + sMap[a].late;
+      var tb = sMap[b].ok + sMap[b].warn + sMap[b].late;
+      var pa = ta > 0 ? sMap[a].ok / ta : 0;
+      var pb = tb > 0 ? sMap[b].ok / tb : 0;
+      return pb - pa;
+    });
+
+    /* ── SEARCH + CARDS ── */
+    appendSection(main, 'Shepherds — tap to open');
+
+    var searchWrap = el('div', 'search-wrap');
+    searchWrap.innerHTML =
+      '<input class="search-box" id="searchBox" type="search" dir="auto" ' +
+      'placeholder="🔍  Search shepherd…" autocomplete="off">';
+    main.appendChild(searchWrap);
+
+    var listWrap = el('div', '');
+    listWrap.id = 'servantList';
+    listWrap.style.cssText = 'display:flex;flex-direction:column;gap:10px;margin-top:4px';
+
+    servants.forEach(function (s) {
+      var d = sMap[s];
+      var total = d.ok + d.warn + d.late;
+      var pct = total > 0 ? Math.round(d.ok / total * 100) : 0;
+
+      var borderClass = d.late > 0 ? 'has-late' : d.warn > 0 ? 'has-warn' : 'all-ok';
+      var pctClass    = d.late > 0 ? 'late'     : d.warn > 0 ? 'warn'     : 'ok';
+
+      var card = el('a', 'shepherd-card ' + borderClass);
+      card.href = 'index.html?servant=' + encodeURIComponent(s);
+      card.setAttribute('data-name', s.toLowerCase());
+      card.innerHTML =
+        '<div class="sc-inner">' +
+          '<div class="sc-avatar">' + escHtml(initials(s)) + '</div>' +
+          '<div class="sc-body">' +
+            '<div class="sc-name" dir="auto">' + escHtml(s) + '</div>' +
+            '<div class="sc-sub">' +
+              '<span><span class="pill pill-ok">'   + d.ok   + '</span> Fold</span>' +
+              '<span><span class="pill pill-warn">' + d.warn + '</span> Wander</span>' +
+              '<span><span class="pill pill-late">' + d.late + '</span> Lost</span>' +
+            '</div>' +
+          '</div>' +
+          '<div class="sc-pills">' +
+            '<div class="sc-pct ' + pctClass + '">' + pct + '%</div>' +
+            '<div class="sc-arrow">›</div>' +
+          '</div>' +
+        '</div>';
+
+      listWrap.appendChild(card);
+    });
+
+    main.appendChild(listWrap);
+
+    document.getElementById('searchBox').addEventListener('input', function () {
+      var q = this.value.toLowerCase().trim();
+      Array.prototype.forEach.call(
+        listWrap.querySelectorAll('.shepherd-card'), function (card) {
+          card.style.display = (!q || card.getAttribute('data-name').indexOf(q) !== -1) ? '' : 'none';
+        });
+    });
+  }
+})();
+</script>
+<script src="https://accounts.google.com/gsi/client" async defer
+        onload="window.dispatchEvent(new Event('gsi-loaded'))"></script>
+</body>
+</html>

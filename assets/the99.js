@@ -1,0 +1,421 @@
+/* ===========================================================================
+   The 99 — shared front-end logic.
+   The helpers keep the names and behaviour they had in the original pages;
+   what changed is the transport: google.script.run became a fetch() call to
+   the Apps Script JSON API, so the pages can live on a normal static host
+   and therefore be installable.
+   =========================================================================== */
+
+var CFG = window.APP_CONFIG || {};
+var TOKEN_KEY = 'the99.idToken';
+var BOOT_KEY  = 'the99.bootstrap';
+
+/* ── VERSES ─────────────────────────────────────────────────────────────── */
+
+var VERSES = [
+  { text: "What man of you, having a hundred sheep, if he loses one of them, does not leave the ninety-nine in the wilderness, and go after the one which is lost until he finds it?", ref: "Luke 15:4" },
+  { text: "He calls together his friends and neighbors, saying to them, 'Rejoice with me, for I have found my sheep which was lost!'", ref: "Luke 15:6" },
+  { text: "I am the good shepherd. The good shepherd gives His life for the sheep.", ref: "John 10:11" },
+  { text: "هأَنَذَا أَسْأَلُ عَنْ غَنَمِي وَأَفْتَقِدُهَا", ref: "حزقيال 34:11" },
+  { text: "Let no one despise your youth, but be an example to the believers in word, in conduct, in love, in spirit, in faith, in purity.", ref: "1 Timothy 4:12" },
+  { text: "My sheep hear My voice, and I know them, and they follow Me.", ref: "John 10:27" },
+  { text: "يَا أَوْلاَدِي، لاَ نُحِبُّ بِالْكَلاَمِ وَلاَ بِاللِّسَانِ، بَلْ بِالْعَمَلِ وَالْحَقِّ.", ref: "رسالة يوحنا الأولى 3:18" }
+];
+
+function randomVerse() { return VERSES[Math.floor(Math.random() * VERSES.length)]; }
+
+function setRandomVerse(textId, refId) {
+  var v = randomVerse();
+  var t = document.getElementById(textId || 'verseText');
+  var r = document.getElementById(refId  || 'verseRef');
+  if (t) t.innerText = v.text;
+  if (r) r.innerText = v.ref;
+}
+
+/* ── FLOCK THRESHOLDS ───────────────────────────────────────────────────── */
+/* Unchanged from the original: <=30 In the Fold, 31-60 Wandering,
+   over 60 or never reached, Lost Sheep. */
+
+/* Defaults only — overwritten from the backend on bootstrap, so code.gs stays
+   the one place these are set. */
+var FOLD_DAYS = 30, WANDER_DAYS = 60;
+
+function flockState(days) {
+  if (days === null || days === undefined || days > WANDER_DAYS) return 'late';
+  if (days > FOLD_DAYS) return 'warn';
+  return 'ok';
+}
+
+/* ── AUTH ───────────────────────────────────────────────────────────────── */
+/* Google Identity Services issues an ID token (valid one hour). Every API
+   call carries it; the backend verifies it and matches the email against the
+   Servants sheet. No password ever reaches this app. */
+
+var Auth = {
+  token: null,
+  profile: null,
+  _onReady: null,
+
+  init: function (onReady) {
+    this._onReady = onReady;
+    this.token = localStorage.getItem(TOKEN_KEY);
+
+    if (this.token && !isExpired(this.token)) {
+      this.profile = decodeJwt(this.token);
+      onReady(this.profile);
+      this._gsi(true);            // renew quietly in the background
+      return;
+    }
+    this.clear();
+    this._gsi(false);
+  },
+
+  _gsi: function (silent) {
+    var self = this;
+    function start() {
+      if (!window.google || !google.accounts || !google.accounts.id) return;
+      google.accounts.id.initialize({
+        client_id: CFG.GOOGLE_CLIENT_ID,
+        callback: function (res) { self._accept(res.credential); },
+        auto_select: true,
+        cancel_on_tap_outside: false,
+        use_fedcm_for_prompt: true
+      });
+      if (!silent) {
+        var host = document.getElementById('gsi-button');
+        if (host) {
+          google.accounts.id.renderButton(host, {
+            theme: 'filled_black', size: 'large', shape: 'pill',
+            text: 'signin_with', width: Math.min(300, host.clientWidth || 300)
+          });
+        }
+      }
+      google.accounts.id.prompt();
+    }
+    if (window.google && window.google.accounts) start();
+    else window.addEventListener('gsi-loaded', start, { once: true });
+  },
+
+  _accept: function (credential) {
+    this.token = credential;
+    this.profile = decodeJwt(credential);
+    localStorage.setItem(TOKEN_KEY, credential);
+    if (this._onReady) this._onReady(this.profile);
+  },
+
+  clear: function () {
+    this.token = null;
+    this.profile = null;
+    localStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(BOOT_KEY);
+  },
+
+  signOut: function () {
+    try { google.accounts.id.disableAutoSelect(); } catch (e) { /* not loaded */ }
+    this.clear();
+    location.href = 'index.html';
+  }
+};
+
+function decodeJwt(token) {
+  try {
+    var part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    var json = decodeURIComponent(atob(part).split('').map(function (c) {
+      return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+    }).join(''));
+    return JSON.parse(json);
+  } catch (e) { return null; }
+}
+
+function isExpired(token) {
+  var p = decodeJwt(token);
+  if (!p || !p.exp) return true;
+  return (p.exp * 1000 - Date.now()) < 120000;   // under 2 minutes left counts as expired
+}
+
+/* ── API ────────────────────────────────────────────────────────────────── */
+/* Apps Script cannot answer a CORS preflight, so the request has to stay a
+   "simple" one: text/plain body and no custom headers. The JSON rides in the
+   body all the same. */
+
+function ApiError(code, message) {
+  var e = new Error(message);
+  e.code = code;
+  return e;
+}
+
+function api(action, payload) {
+  payload = payload || {};
+
+  if (!CFG.API_URL || CFG.API_URL.indexOf('PASTE_') === 0) {
+    return Promise.reject(ApiError(0, 'API_URL is not set yet — see step 3 of README.md'));
+  }
+  if (!Auth.token || isExpired(Auth.token)) {
+    Auth.clear();
+    return Promise.reject(ApiError(401, 'Your sign-in expired. Please sign in again.'));
+  }
+
+  return fetch(CFG.API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action: action, idToken: Auth.token, payload: payload }),
+    redirect: 'follow'
+  }).catch(function () {
+    throw ApiError(0, navigator.onLine
+      ? 'Could not reach the server. Please try again.'
+      : 'You are offline. Reconnect and try again.');
+  }).then(function (res) {
+    return res.text().then(function (text) {
+      var body;
+      try { body = JSON.parse(text); }
+      catch (e) {
+        throw ApiError(res.status,
+          'The server sent an unexpected response. Check that the web app is ' +
+          'deployed with access set to "Anyone".');
+      }
+      if (!body.ok) {
+        var err = body.error || {};
+        if (err.code === 401) Auth.clear();
+        throw ApiError(err.code || 500, err.message || 'Something went wrong');
+      }
+      return body.data;
+    });
+  });
+}
+
+/** bootstrap() is wanted by every page, so keep it for the session. */
+function getBootstrap(force) {
+  if (!force) {
+    var cached = sessionStorage.getItem(BOOT_KEY);
+    if (cached) { try { return Promise.resolve(JSON.parse(cached)); } catch (e) { /* refetch */ } }
+  }
+  return api('bootstrap').then(function (data) {
+    sessionStorage.setItem(BOOT_KEY, JSON.stringify(data));
+    return data;
+  });
+}
+
+/* ── THE GATE ───────────────────────────────────────────────────────────── */
+
+/**
+ * Shows the sign-in screen until the servant is authenticated and known to the
+ * Servants sheet, then resolves with { profile, boot } and reveals the app.
+ * Pass { leaderOnly: true } to refuse ordinary servants.
+ */
+function requireServant(opts) {
+  opts = opts || {};
+  return new Promise(function (resolve) {
+    var gate = document.getElementById('gate');
+    var app  = document.getElementById('app');
+
+    function showGate(message) {
+      if (app) app.hidden = true;
+      if (gate) {
+        gate.hidden = false;
+        var note = document.getElementById('gate-error');
+        if (note) {
+          if (message) { note.hidden = false; note.textContent = message; }
+          else note.hidden = true;
+        }
+      }
+    }
+
+    var v = randomVerse();
+    var gv = document.getElementById('gate-verse');
+    var gr = document.getElementById('gate-ref');
+    if (gv) gv.innerText = v.text;
+    if (gr) gr.innerText = v.ref;
+
+    Auth.init(function (profile) {
+      getBootstrap().then(function (boot) {
+        if (boot.thresholds) {
+          FOLD_DAYS   = boot.thresholds.fold   || FOLD_DAYS;
+          WANDER_DAYS = boot.thresholds.wander || WANDER_DAYS;
+        }
+        if (opts.leaderOnly && !boot.user.isLeader) {
+          showGate('This page is for leaders only.\n\nYou are signed in as ' +
+                   boot.user.email + '.');
+          return;
+        }
+        if (gate) gate.hidden = true;
+        if (app) app.hidden = false;
+        mountChrome(boot);
+        resolve({ profile: profile, boot: boot });
+      }).catch(function (err) {
+        Auth.clear();
+        showGate(err.message);
+      });
+    });
+
+    if (!Auth.token) showGate(null);
+  });
+}
+
+/** Fills the header tools, the nav, and marks the current page. */
+function mountChrome(boot) {
+  var tools = document.getElementById('header-tools');
+  if (tools) {
+    tools.innerHTML =
+      '<button class="header-btn" id="installBtn" type="button" hidden>Install</button>' +
+      '<button class="header-btn" id="signoutBtn" type="button">Sign out</button>';
+    document.getElementById('signoutBtn').onclick = function () { Auth.signOut(); };
+    if (deferredInstall) document.getElementById('installBtn').hidden = false;
+    document.getElementById('installBtn').onclick = doInstall;
+  }
+
+  var nav = document.getElementById('nav');
+  if (nav) {
+    if (!boot.user.isLeader) { nav.hidden = true; }
+    else {
+      nav.hidden = false;
+      nav.innerHTML =
+        '<a href="index.html">My Flock</a>' +
+        '<a href="shepherds.html">Shepherds</a>' +
+        '<a href="dashboard.html">Dashboard</a>';
+      var here = location.pathname.split('/').pop() || 'index.html';
+      var links = nav.querySelectorAll('a');
+      for (var i = 0; i < links.length; i++) {
+        if (links[i].getAttribute('href') === here) links[i].setAttribute('aria-current', 'page');
+      }
+    }
+  }
+}
+
+/* ── HELPERS (unchanged from the original pages) ────────────────────────── */
+
+function escHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function escJs(s) {
+  return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+var COUNTRY_CODE = '20';
+function cleanPhone(phone) {
+  if (!phone) return '';
+  var digits = phone.toString().replace(/\D/g, '');
+  if (digits.startsWith('0')) digits = COUNTRY_CODE + digits.substring(1);
+  return digits;
+}
+
+function daysSince(date) {
+  if (!date) return null;
+  var d = new Date(date);
+  if (isNaN(d.getTime())) return null;
+  return Math.floor((new Date() - d) / 86400000);
+}
+
+function formatDate(date) {
+  if (!date) return null;
+  var d = new Date(date);
+  if (isNaN(d.getTime())) return null;
+  return d.toLocaleDateString();
+}
+
+function initials(name) {
+  return String(name || '').trim().split(/\s+/)
+    .map(function (w) { return w[0] || ''; }).slice(0, 2).join('').toUpperCase();
+}
+
+function isSuccessful(f) {
+  var v = String(f.Successful || f['Successful?'] || '').trim().toLowerCase();
+  return v === 'true' || v === 'yes' || v === '1';
+}
+
+function normalizeYear(val) {
+  var n = parseInt(parseFloat(String(val || '').trim()));
+  if (isNaN(n)) return '?';
+  if (n >= 4) return '4-5';
+  return String(n);
+}
+
+function gpsUrl(val) {
+  var v = String(val || '').trim();
+  if (!v) return null;
+  if (v.startsWith('http')) return v;
+  return 'https://maps.google.com/?q=' + encodeURIComponent(v);
+}
+
+function el(tag, cls) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  return e;
+}
+
+function appendSection(parent, label) {
+  var s = el('div', 'section-label');
+  s.textContent = label;
+  parent.appendChild(s);
+}
+
+function statCard(type, num, label) {
+  return '<div class="stat-card ' + type + '">' +
+         '<span class="stat-num">' + num + '</span>' +
+         '<span class="stat-label">' + escHtml(label) + '</span></div>';
+}
+
+function showToast(message, color) {
+  var old = document.querySelectorAll('.toast');
+  for (var i = 0; i < old.length; i++) old[i].remove();
+
+  var toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.style.backgroundColor = color || '#5A7A5A';
+  toast.setAttribute('role', 'status');
+  toast.innerText = message;
+  document.body.appendChild(toast);
+
+  setTimeout(function () { toast.classList.add('show'); }, 30);
+  setTimeout(function () {
+    toast.classList.remove('show');
+    setTimeout(function () { toast.remove(); }, 400);
+  }, 3200);
+}
+
+/** Search across the fields a servant would actually type. */
+function matchesQuery(youth, q) {
+  if (!q) return true;
+  var hay = [youth.Full_Name, youth.Area, youth.Address, youth.University,
+             youth.Faculty, youth.Mobile, youth.Talent, youth.Talent_Category,
+             youth.Service, youth.Notes].join(' ').toLowerCase();
+  return hay.indexOf(q) !== -1;
+}
+
+/* ── PWA ────────────────────────────────────────────────────────────────── */
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('sw.js').catch(function () { /* non-fatal */ });
+  });
+}
+
+var deferredInstall = null;
+window.addEventListener('beforeinstallprompt', function (e) {
+  e.preventDefault();
+  deferredInstall = e;
+  var btn = document.getElementById('installBtn');
+  if (btn) btn.hidden = false;
+});
+
+function doInstall() {
+  if (!deferredInstall) return;
+  deferredInstall.prompt();
+  deferredInstall.userChoice.then(function (choice) {
+    if (choice.outcome === 'accepted') {
+      var btn = document.getElementById('installBtn');
+      if (btn) btn.hidden = true;
+    }
+    deferredInstall = null;
+  });
+}
+
+/* A quiet strip when the connection drops, so a failed save makes sense. */
+window.addEventListener('offline', function () { toggleOfflineBar(true); });
+window.addEventListener('online',  function () { toggleOfflineBar(false); });
+
+function toggleOfflineBar(show) {
+  var bar = document.getElementById('offlineBar');
+  if (bar) bar.hidden = !show;
+}

@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>The 99 — Follow-Up</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#3B2A1A">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="The 99">
+<link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+<link rel="icon" href="assets/icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400;1,600&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/the99.css">
+</head>
+<body>
+
+<!-- ── SIGN-IN GATE ────────────────────────────────────────────────────── -->
+<div class="gate" id="gate" hidden>
+  <div class="gate-emblem">🐑</div>
+  <div class="gate-brand">The 99</div>
+  <div class="gate-sub">St. Mark Youth Follow-Up</div>
+  <div class="gate-verse" id="gate-verse"></div>
+  <div class="gate-ref"   id="gate-ref"></div>
+  <div class="gate-btn-wrap" id="gsi-button"></div>
+  <p class="gate-note">Sign in with the Google account registered on the Servants sheet.</p>
+  <p class="gate-error" id="gate-error" hidden></p>
+</div>
+
+<!-- ── APP ─────────────────────────────────────────────────────────────── -->
+<div id="app" hidden>
+
+  <div class="offline-bar" id="offlineBar" hidden>⚠ You are offline — saving is paused</div>
+
+  <div class="header">
+    <div class="header-tools" id="header-tools"></div>
+    <div class="header-emblem">🐑</div>
+    <div class="header-brand">The 99</div>
+    <div class="header-sub">St. Mark Youth Follow-Up</div>
+    <div class="header-servant">Servant: <strong id="servantName"></strong></div>
+    <nav class="nav" id="nav" hidden></nav>
+  </div>
+
+  <div class="verse-box">
+    <div class="verse-tag">Today's Word</div>
+    <div class="verse-text" id="verseText"></div>
+    <div class="verse-ref"  id="verseRef"></div>
+  </div>
+
+  <div class="summary" id="summary"></div>
+
+  <div class="lost-banner" id="lostBanner" hidden>
+    <span class="emoji">🕯️</span><span id="lostBannerText"></span>
+  </div>
+
+  <div class="filter-bar" id="filterBar" hidden>
+    <input class="search-box" id="searchBox" type="search" dir="auto"
+           placeholder="🔍  Search name, area, university…" autocomplete="off">
+    <div class="filter-line">
+      <select class="filter-select" id="sortBy">
+        <option value="urgent">Most overdue first</option>
+        <option value="name">Name A–Z</option>
+        <option value="recent">Recently reached</option>
+        <option value="year">Year</option>
+      </select>
+      <span class="filter-count" id="filterCount"></span>
+    </div>
+  </div>
+
+  <div class="container" id="cards">
+    <div class="page-loading">
+      <div class="page-loading-ring"></div>
+      <div class="page-loading-text">Gathering the flock…</div>
+    </div>
+    <div class="skeleton-card"><div class="sk h-big w-3q"></div><div class="sk h-small w-half"></div><div class="sk h-small w-full"></div></div>
+    <div class="skeleton-card"><div class="sk h-big w-3q"></div><div class="sk h-small w-half"></div><div class="sk h-small w-full"></div></div>
+    <div class="skeleton-card"><div class="sk h-big w-3q"></div><div class="sk h-small w-half"></div><div class="sk h-small w-full"></div></div>
+  </div>
+</div>
+
+<div class="reload-overlay" id="reloadOverlay">
+  <div class="reload-spinner"></div>
+  <p>Searching for the lost…</p>
+</div>
+
+<script src="config.js"></script>
+<script src="assets/the99.js"></script>
+<script>
+(function () {
+  var FLOCK = [];          // every youth in this flock
+  var SERVANT_NAME = '';   // whose flock is on screen
+  var CAN_EDIT = false;    // own flock, or a leader
+  var stateFilter = '';    // '', 'ok', 'warn', 'late' — driven by the chips
+
+  setRandomVerse();
+
+  requireServant().then(function (ctx) {
+    // A leader may open another shepherd's flock: index.html?servant=Name
+    var asked = new URLSearchParams(location.search).get('servant');
+    SERVANT_NAME = (ctx.boot.user.isLeader && asked) ? asked.trim() : ctx.boot.user.name;
+    CAN_EDIT = ctx.boot.user.isLeader || SERVANT_NAME === ctx.boot.user.name;
+    document.getElementById('servantName').textContent = SERVANT_NAME;
+    loadData();
+  });
+
+  function loadData() {
+    api('flock', { servant: SERVANT_NAME }).then(function (data) {
+      FLOCK = data.youths || [];
+      document.getElementById('filterBar').hidden = FLOCK.length === 0;
+      renderSummary();
+      renderCards();
+    }).catch(function (err) {
+      document.getElementById('cards').innerHTML =
+        '<div class="empty-state"><div class="icon">⚠️</div><p>' + escHtml(err.message) + '</p></div>';
+    });
+  }
+
+  /* ── SUMMARY CHIPS (also the state filter) ─────────────────────────── */
+
+  function renderSummary() {
+    var ok = 0, warn = 0, late = 0;
+    FLOCK.forEach(function (y) {
+      var s = flockState(daysSince(y.Latest_Followup));
+      if (s === 'late') late++; else if (s === 'warn') warn++; else ok++;
+    });
+
+    document.getElementById('summary').innerHTML =
+      chip('ok',   ok,   'In the Fold') +
+      chip('warn', warn, 'Wandering')   +
+      chip('late', late, 'Lost Sheep');
+
+    var banner = document.getElementById('lostBanner');
+    if (late > 0) {
+      banner.hidden = false;
+      document.getElementById('lostBannerText').textContent =
+        late === 1 ? 'One sheep is lost. Go after it.'
+                   : late + ' sheep are lost. Go after them.';
+    } else {
+      banner.hidden = true;
+    }
+
+    Array.prototype.forEach.call(
+      document.querySelectorAll('.summary-chip'), function (b) {
+        b.addEventListener('click', function () {
+          stateFilter = (stateFilter === b.dataset.state) ? '' : b.dataset.state;
+          renderSummary();
+          renderCards();
+        });
+      });
+  }
+
+  function chip(state, count, label) {
+    return '<button class="summary-chip chip-' + state + '" type="button" ' +
+           'data-state="' + state + '" aria-pressed="' + (stateFilter === state) + '">' +
+           '<span class="chip-count">' + count + '</span>' +
+           '<span class="chip-label">' + label + '</span></button>';
+  }
+
+  /* ── CARD LIST ─────────────────────────────────────────────────────── */
+
+  function visibleYouths() {
+    var q = document.getElementById('searchBox').value.trim().toLowerCase();
+    var rows = FLOCK.filter(function (y) {
+      if (stateFilter && flockState(daysSince(y.Latest_Followup)) !== stateFilter) return false;
+      return matchesQuery(y, q);
+    });
+
+    // Never-reached sorts as infinitely overdue, the same way it displays.
+    function urgency(y) {
+      var d = daysSince(y.Latest_Followup);
+      return d === null ? Infinity : d;
+    }
+    var sort = document.getElementById('sortBy').value;
+    if (sort === 'urgent')      rows.sort(function (a, b) { return urgency(b) - urgency(a); });
+    else if (sort === 'recent') rows.sort(function (a, b) { return urgency(a) - urgency(b); });
+    else if (sort === 'year')   rows.sort(function (a, b) {
+      return String(a.Year).localeCompare(String(b.Year), undefined, { numeric: true }) ||
+             String(a.Full_Name).localeCompare(String(b.Full_Name));
+    });
+    else rows.sort(function (a, b) {
+      return String(a.Full_Name).localeCompare(String(b.Full_Name));
+    });
+    return rows;
+  }
+
+  function renderCards() {
+    var container = document.getElementById('cards');
+    container.innerHTML = '';
+
+    if (!FLOCK.length) {
+      container.innerHTML = '<div class="empty-state"><div class="icon">🐑</div><p>No youth assigned yet.</p></div>';
+      document.getElementById('filterCount').textContent = '';
+      return;
+    }
+
+    var rows = visibleYouths();
+    document.getElementById('filterCount').textContent = rows.length + ' of ' + FLOCK.length;
+
+    if (!rows.length) {
+      container.innerHTML = '<div class="empty-state"><div class="icon">🔍</div><p>No one matches that search.</p></div>';
+      return;
+    }
+
+    var html = '';
+    rows.forEach(function (youth, index) {
+      html += cardHtml(youth, index);
+    });
+    container.innerHTML = html;
+
+    // Keep the index used by the inline handlers aligned with what is rendered.
+    VISIBLE = rows;
+  }
+
+  var VISIBLE = [];
+
+  function cardHtml(youth, index) {
+    var days  = daysSince(youth.Latest_Followup);
+    var state = flockState(days);
+
+    var highlightClass = state === 'late' ? 'highlight-danger'
+                       : state === 'warn' ? 'highlight-warning' : '';
+    var daysClass  = state === 'late' ? 'days-late'  : state === 'warn' ? 'days-warn'  : 'days-ok';
+    var badgeClass = state === 'late' ? 'status-danger' : state === 'warn' ? 'status-warning' : 'status-active';
+
+    var daysText = days === null ? 'Not yet reached'
+                 : days === 0    ? 'Reached today'
+                 : days + ' days since last contact';
+    var daysIcon = state === 'late' ? '🔴' : state === 'warn' ? '🟡' : '🟢';
+
+    var phoneClean   = cleanPhone(youth.Mobile);
+    var whatsappLink = phoneClean ? 'https://wa.me/' + phoneClean : '';
+    var callLink     = phoneClean ? 'tel:' + phoneClean : '';
+
+    var gpsHtml = '';
+    if (youth.GPS) {
+      gpsHtml = infoItemCustom('GPS',
+        '<a class="gps-link" href="' + escHtml(gpsUrl(youth.GPS)) + '" target="_blank" rel="noopener">📍 Open in Maps</a>');
+    }
+
+    var socialLinks = [];
+    if (youth.FB)        socialLinks.push('<a class="social-link social-fb" href="' + escHtml(youth.FB)        + '" target="_blank" rel="noopener">👤 Facebook</a>');
+    if (youth.Instagram) socialLinks.push('<a class="social-link social-ig" href="' + escHtml(youth.Instagram) + '" target="_blank" rel="noopener">📷 Instagram</a>');
+    var socialHtml = socialLinks.length ? '<div class="social-row">' + socialLinks.join('') + '</div>' : '';
+
+    var notesHtml =
+      '<div class="info-item full-item">' +
+        '<div class="info-label">Notes</div>' +
+        '<div class="notes-edit-row">' +
+          '<textarea class="notes-textarea" id="notes_' + index + '" dir="auto" ' +
+            (CAN_EDIT ? '' : 'readonly ') + 'placeholder="Add a note…">' + escHtml(youth.Notes || '') + '</textarea>' +
+          (CAN_EDIT
+            ? '<button class="notes-save-btn" id="notesbtn_' + index + '" type="button" ' +
+              'onclick="saveNotes(' + index + ')">Save Notes</button>'
+            : '') +
+        '</div>' +
+      '</div>';
+
+    var followupHtml = CAN_EDIT
+      ? '<div class="followup-box">' +
+          '<div class="followup-toggle" onclick="toggleFollowup(this)">Record a Reach-Out</div>' +
+          '<div class="followup-content">' +
+            '<div class="followup-row">' +
+              '<select id="type_' + index + '" class="follow-select">' +
+                '<option value="WhatsApp">💬 WhatsApp</option>' +
+                '<option value="Call">📞 Call</option>' +
+                '<option value="Home Visit">🏠 Home Visit</option>' +
+                '<option value="Outing">🚶 Outing</option>' +
+              '</select>' +
+            '</div>' +
+            '<div class="followup-row">' +
+              '<label class="success-toggle"><input type="checkbox" id="success_' + index + '" checked> Successful reach-out</label>' +
+            '</div>' +
+            '<button class="log-main-btn" id="savebtn_' + index + '" type="button" onclick="submitFollowUp(' + index + ')">' +
+              '<div class="btn-spinner"></div><span class="btn-label">Save Log</span>' +
+            '</button>' +
+          '</div>' +
+        '</div>'
+      : '';
+
+    return '' +
+      '<div class="card ' + highlightClass + '">' +
+        '<div class="card-header" onclick="toggleCard(this)">' +
+          '<div class="top-row">' +
+            '<div class="name" dir="auto">' + escHtml(youth.Full_Name || '') + '</div>' +
+            '<div class="badge ' + badgeClass + '">' + escHtml(youth.Status || 'Active') + '</div>' +
+          '</div>' +
+          '<div class="bottom-row">' +
+            '<div class="days-badge ' + daysClass + '">' + daysIcon + ' ' + daysText + '</div>' +
+            '<div class="expand-indicator">▼</div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card-content">' +
+          '<div class="info">' +
+            '<div class="info-section-title">Contact</div>' +
+            infoItem('Mobile',   youth.Mobile) +
+            infoItem('Area',     youth.Area) +
+            infoItemFull('Address', youth.Address) +
+            gpsHtml + socialHtml +
+            '<div class="info-section-title">Personal</div>' +
+            infoItem('Year',       youth.Year) +
+            infoItem('Birth Date', youth.Birth_Date) +
+            infoItem('University', youth.University) +
+            infoItem('Faculty',    youth.Faculty) +
+            '<div class="info-section-title">Service &amp; Spiritual</div>' +
+            infoItem('Service',         youth.Service) +
+            infoItem('Confession',      youth.Confession) +
+            infoItem('Talent',          youth.Talent) +
+            infoItem('Talent Category', youth.Talent_Category) +
+            '<div class="info-section-title">Follow-Up</div>' +
+            infoItem('Last Contact', formatDate(youth.Latest_Followup)) +
+            notesHtml +
+          '</div>' +
+          '<div class="button-row">' +
+            (whatsappLink ? '<a class="btn whatsapp" href="' + whatsappLink + '" target="_blank" rel="noopener">💬 WhatsApp</a>' : '') +
+            (callLink     ? '<a class="btn call" href="' + callLink + '">📞 Call</a>' : '') +
+          '</div>' +
+          followupHtml +
+        '</div>' +
+      '</div>';
+  }
+
+  /* ── INFO ROW HELPERS ──────────────────────────────────────────────── */
+
+  function infoItem(label, value) {
+    if (value == null || value === '') return '';
+    return '<div class="info-item"><div class="info-label">' + escHtml(label) + '</div>' +
+           '<div class="info-value" dir="auto">' + escHtml(String(value)) + '</div></div>';
+  }
+  function infoItemFull(label, value) {
+    if (value == null || value === '') return '';
+    return '<div class="info-item full-item"><div class="info-label">' + escHtml(label) + '</div>' +
+           '<div class="info-value" dir="auto">' + escHtml(String(value)) + '</div></div>';
+  }
+  function infoItemCustom(label, innerHtml) {
+    if (!innerHtml) return '';
+    return '<div class="info-item"><div class="info-label">' + escHtml(label) + '</div>' +
+           '<div class="info-value" style="text-align:right">' + innerHtml + '</div></div>';
+  }
+
+  /* ── INTERACTION ───────────────────────────────────────────────────── */
+
+  window.toggleCard = function (header) { header.parentElement.classList.toggle('open'); };
+
+  window.toggleFollowup = function (element) {
+    var c = element.nextElementSibling;
+    c.style.display = c.style.display === 'block' ? 'none' : 'block';
+  };
+
+  window.submitFollowUp = function (index) {
+    var youth = VISIBLE[index];
+    if (!youth) return;
+    var btn = document.getElementById('savebtn_' + index);
+    if (!btn || btn.disabled) return;
+
+    btn.disabled = true;
+    btn.classList.add('loading');
+
+    api('logFollowup', {
+      youthId: youth.Youth_ID,
+      type: document.getElementById('type_' + index).value,
+      successful: document.getElementById('success_' + index).checked
+    }).then(function () {
+      showToast('✔ Logged for ' + youth.Full_Name, '#5A7A5A');
+      setTimeout(function () {
+        document.getElementById('reloadOverlay').classList.add('show');
+        api('flock', { servant: SERVANT_NAME }).then(function (data) {
+          document.getElementById('reloadOverlay').classList.remove('show');
+          FLOCK = data.youths || [];
+          renderSummary();
+          renderCards();
+        }).catch(function () {
+          document.getElementById('reloadOverlay').classList.remove('show');
+          showToast('Could not refresh', '#C07A1A');
+        });
+      }, 600);
+    }).catch(function (err) {
+      showToast('⚠ ' + err.message, '#963232');
+      btn.disabled = false;
+      btn.classList.remove('loading');
+    });
+  };
+
+  window.saveNotes = function (index) {
+    var youth = VISIBLE[index];
+    if (!youth) return;
+    var btn = document.getElementById('notesbtn_' + index);
+    var textarea = document.getElementById('notes_' + index);
+    if (!btn || btn.disabled) return;
+
+    var newNotes = textarea.value.trim();
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+
+    api('updateNotes', { youthId: youth.Youth_ID, notes: newNotes }).then(function () {
+      youth.Notes = newNotes;                    // keep the local copy in step
+      showToast('📝 Notes saved', '#5A7A5A');
+      btn.textContent = 'Saved ✓';
+      setTimeout(function () { btn.textContent = 'Save Notes'; btn.disabled = false; }, 2000);
+    }).catch(function (err) {
+      showToast('⚠ ' + err.message, '#963232');
+      btn.textContent = 'Save Notes';
+      btn.disabled = false;
+    });
+  };
+
+  document.getElementById('searchBox').addEventListener('input', renderCards);
+  document.getElementById('sortBy').addEventListener('change', renderCards);
+})();
+</script>
+<script src="https://accounts.google.com/gsi/client" async defer
+        onload="window.dispatchEvent(new Event('gsi-loaded'))"></script>
+</body>
+</html>

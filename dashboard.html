@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>The 99 — Shepherd's Dashboard</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#3B2A1A">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="The 99">
+<link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
+<link rel="icon" href="assets/icons/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/the99.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/chartjs-plugin-datalabels/2.2.0/chartjs-plugin-datalabels.min.js"></script>
+</head>
+<body>
+
+<div class="gate" id="gate" hidden>
+  <div class="gate-emblem">🐑</div>
+  <div class="gate-brand">The 99</div>
+  <div class="gate-sub">Shepherd's Dashboard</div>
+  <div class="gate-verse" id="gate-verse"></div>
+  <div class="gate-ref"   id="gate-ref"></div>
+  <div class="gate-btn-wrap" id="gsi-button"></div>
+  <p class="gate-note">Sign in with the Google account registered on the Servants sheet.</p>
+  <p class="gate-error" id="gate-error" hidden></p>
+</div>
+
+<div id="app" hidden>
+
+  <div class="offline-bar" id="offlineBar" hidden>⚠ You are offline</div>
+
+  <div class="header compact">
+    <div class="header-tools" id="header-tools"></div>
+    <div class="header-emblem">🐑</div>
+    <div class="header-brand">The 99</div>
+    <div class="header-sub">Shepherd's Dashboard · St. Mark</div>
+    <nav class="nav" id="nav" hidden></nav>
+  </div>
+
+  <div class="main" id="main">
+    <div class="loading-screen">
+      <div class="loading-spinner"></div>
+      <div class="loading-text">Counting the flock…</div>
+    </div>
+  </div>
+</div>
+
+<script src="config.js"></script>
+<script src="assets/the99.js"></script>
+<script>
+(function () {
+
+  /* ── GRADE COLOURS ── */
+  var GRADE_COLORS = {
+    'Year 1 - Female':   '#C0697A',
+    'Year 1 - Male':     '#4A7FA5',
+    'Year 2 - Female':   '#D4956A',
+    'Year 2 - Male':     '#3A8A7A',
+    'Year 3 - Female':   '#9B6BAB',
+    'Year 3 - Male':     '#5A8A5A',
+    'Year 4-5 - Female': '#C87A3A',
+    'Year 4-5 - Male':   '#4A5A9A'
+  };
+  function gradeColor(g) { return GRADE_COLORS[g] || '#95A5A6'; }
+
+  var TYPE_PALETTE = {
+    WhatsApp:     '#4CAF50',
+    Call:         '#4A7FA5',
+    'Home Visit': '#9B6BAB',
+    Outing:       '#C8955A',
+    Other:        '#9A8A7A'
+  };
+
+  var GRADE_ORDER = [
+    'Year 1 - Female', 'Year 1 - Male',
+    'Year 2 - Female', 'Year 2 - Male',
+    'Year 3 - Female', 'Year 3 - Male',
+    'Year 4-5 - Female', 'Year 4-5 - Male'
+  ];
+
+  function sortedGradeKeys(gradeSet) {
+    var known = GRADE_ORDER.filter(function (g) { return gradeSet[g]; });
+    var unknown = Object.keys(gradeSet).filter(function (g) {
+      return GRADE_ORDER.indexOf(g) < 0;
+    }).sort();
+    return known.concat(unknown);
+  }
+
+  function gradeKey(f) {
+    return 'Year ' + normalizeYear(f.Year) + ' - ' + (f.Gender || 'Unknown');
+  }
+
+  function monthKey(dateVal) {
+    var d = new Date(dateVal);
+    if (isNaN(d.getTime())) return null;
+    return d.getFullYear() + '-' + (d.getMonth() + 1);
+  }
+
+  /* ── BOOTSTRAP ── */
+  requireServant({ leaderOnly: true }).then(function () {
+    api('dashboard').then(buildDashboard).catch(function (err) {
+      document.getElementById('main').innerHTML =
+        '<div class="empty-state"><div class="icon">⚠️</div><p>' + escHtml(err.message) + '</p></div>';
+    });
+  });
+
+  /* ── MAIN BUILD ── */
+  function buildDashboard(data) {
+    var main = document.getElementById('main');
+    var youth        = data.youths   || [];
+    var allFollowups = data.followUps || [];
+    var followups    = allFollowups.filter(isSuccessful);
+
+    main.innerHTML = '';
+    main.appendChild(buildCelebrationBanner(youth));
+
+    var ok = 0, warn = 0, late = 0;
+    youth.forEach(function (y) {
+      var s = flockState(daysSince(y.Latest_Followup));
+      if (s === 'late') late++; else if (s === 'warn') warn++; else ok++;
+    });
+
+    appendSection(main, 'The Flock');
+    var g1 = el('div', 'stat-grid three');
+    g1.innerHTML = statCard('ok', ok, 'In the Fold') +
+                   statCard('warn', warn, 'Wandering') +
+                   statCard('late', late, 'Lost Sheep');
+    main.appendChild(g1);
+
+    var g2 = el('div', 'stat-grid');
+    g2.innerHTML = statCard('dark', youth.length,     'Total Youth') +
+                   statCard('dark', followups.length, 'Reach-Outs');
+    main.appendChild(g2);
+
+    appendSection(main, 'Reach-Out Activity');
+    main.appendChild(buildTrendChart(followups));
+    main.appendChild(buildTypeChart(followups));
+
+    appendSection(main, 'Grade Leaderboard');
+    main.appendChild(buildGradeLeaderboard(youth));
+  }
+
+  /* ── CELEBRATION BANNER ───────────────────────────────────────────────
+     Was hardcoded to one name. Now it reads the flock and finds whoever is
+     actually carrying it: a shepherd with no lost and no wandering sheep,
+     largest flock first. If nobody is at 100%, it honours the closest.
+  -------------------------------------------------------------------- */
+
+  function buildCelebrationBanner(youth) {
+    var banner = el('div', 'celebration-banner');
+
+    var sMap = {};
+    youth.forEach(function (y) {
+      var name = (y.Servant_Name || '').trim();
+      if (!name) return;
+      if (!sMap[name]) sMap[name] = { ok: 0, total: 0 };
+      sMap[name].total++;
+      if (flockState(daysSince(y.Latest_Followup)) === 'ok') sMap[name].ok++;
+    });
+
+    // A flock of one or two is too small for the honour to mean much.
+    var MIN_FLOCK = 3;
+    var ranked = Object.keys(sMap)
+      .map(function (n) {
+        return { name: n, ok: sMap[n].ok, total: sMap[n].total,
+                 pct: sMap[n].total ? Math.round(sMap[n].ok / sMap[n].total * 100) : 0 };
+      })
+      .filter(function (r) { return r.total >= MIN_FLOCK; })
+      .sort(function (a, b) { return b.pct - a.pct || b.total - a.total; });
+
+    var dotConfigs = [
+      { left: 8,  top: 55, size: 5, color: '#D4A853', delay: 0   },
+      { left: 18, top: 30, size: 4, color: '#C8955A', delay: 0.7 },
+      { left: 30, top: 70, size: 3, color: '#D4A853', delay: 1.4 },
+      { left: 55, top: 20, size: 4, color: '#F7F0E6', delay: 0.4 },
+      { left: 70, top: 65, size: 3, color: '#D4A853', delay: 1.1 },
+      { left: 82, top: 35, size: 5, color: '#C8955A', delay: 0.2 },
+      { left: 92, top: 55, size: 3, color: '#D4A853', delay: 1.8 },
+      { left: 45, top: 80, size: 4, color: '#F7F0E6', delay: 0.9 }
+    ];
+    var dotsHtml = '<div class="banner-dots">' + dotConfigs.map(function (d) {
+      return '<div class="dot" style="left:' + d.left + '%;top:' + d.top + '%;' +
+             'width:' + d.size + 'px;height:' + d.size + 'px;background:' + d.color + ';' +
+             'animation-delay:' + d.delay + 's;"></div>';
+    }).join('') + '</div>';
+
+    if (!ranked.length) {
+      banner.innerHTML = dotsHtml +
+        '<div class="banner-inner">' +
+          '<div class="banner-medallion"><div class="medallion-num">99</div><div class="medallion-pct">Flock</div></div>' +
+          '<div class="banner-text">' +
+            '<div class="banner-eyebrow">The Ninety-Nine</div>' +
+            '<div class="banner-name">Go after the one</div>' +
+            '<div class="banner-desc">Not enough data yet to name a faithful shepherd.</div>' +
+          '</div>' +
+          sheepHtml() +
+        '</div>';
+      return banner;
+    }
+
+    var top = ranked[0];
+    var perfect = top.pct === 100;
+    var alsoPerfect = ranked.filter(function (r) { return r.pct === 100; }).length - 1;
+
+    var desc = perfect
+      ? 'Reached every single youth in their flock.<br>Not one lost sheep. 🌿' +
+        (alsoPerfect > 0
+          ? '<br><span style="opacity:.75">and ' + alsoPerfect + ' other ' +
+            (alsoPerfect === 1 ? 'shepherd' : 'shepherds') + ' at 100%</span>'
+          : '')
+      : top.ok + ' of ' + top.total + ' in the fold — ' +
+        (top.total - top.ok) + ' still to reach.';
+
+    banner.innerHTML = dotsHtml +
+      '<div class="banner-inner">' +
+        '<div class="banner-medallion">' +
+          '<div class="medallion-num">' + top.pct + '</div>' +
+          '<div class="medallion-pct">% Fold</div>' +
+        '</div>' +
+        '<div class="banner-text">' +
+          '<div class="banner-eyebrow">' +
+            (perfect ? 'Faithful Shepherd · Whole Flock Reached' : 'Closest to the Whole Flock') +
+          '</div>' +
+          '<div class="banner-name" dir="auto">' + escHtml(top.name) + '</div>' +
+          '<div class="banner-desc">' + desc + '</div>' +
+        '</div>' +
+        sheepHtml() +
+      '</div>';
+
+    return banner;
+  }
+
+  function sheepHtml() {
+    return '<div class="banner-sheep">' +
+             '<div class="sheep-row">' +
+               '<span class="sheep-icon">🐑</span>' +
+               '<span class="sheep-icon">🐑</span>' +
+               '<span class="sheep-icon">🐑</span>' +
+             '</div>' +
+             '<div class="sheep-label">All in fold</div>' +
+           '</div>';
+  }
+
+  /* ── CHART 1 — MONTHLY REACH-OUTS ── */
+
+  function buildTrendChart(followups) {
+    var card = el('div', 'chart-card');
+    card.innerHTML =
+      '<div class="chart-header">' +
+        '<div class="chart-title">Monthly Reach-Outs</div>' +
+        '<div class="chart-subtitle">Successful only · Years 4 &amp; 5 combined</div>' +
+      '</div>' +
+      '<div class="filter-row">' +
+        '<select id="monthFilter" class="filter-select" aria-label="Month"></select>' +
+        '<select id="gradeFilter" class="filter-select" aria-label="Grade"></select>' +
+      '</div>' +
+      '<div class="chart-wrap"><canvas id="trendChart"></canvas></div>' +
+      '<div class="chart-legend" id="trendLegend"></div>';
+
+    setTimeout(function () {
+      var monthSel = document.getElementById('monthFilter');
+      var gradeSel = document.getElementById('gradeFilter');
+      var legendEl = document.getElementById('trendLegend');
+
+      var monthSet = {}, gradeSet = {};
+      followups.forEach(function (f) {
+        var m = monthKey(f.Date);
+        if (m) monthSet[m] = 1;
+        gradeSet[gradeKey(f)] = 1;
+      });
+
+      var monthList = Object.keys(monthSet).sort();
+      var gradeList = sortedGradeKeys(gradeSet);
+
+      monthSel.innerHTML = '<option value="">All Months</option>' +
+        monthList.map(function (m) { return '<option value="' + m + '">' + m + '</option>'; }).join('');
+      gradeSel.innerHTML = '<option value="">All Grades</option>' +
+        gradeList.map(function (g) { return '<option value="' + escHtml(g) + '">' + escHtml(g) + '</option>'; }).join('');
+
+      var chart = new Chart(document.getElementById('trendChart'), {
+        type: 'bar',
+        data: { labels: [], datasets: [{ data: [], backgroundColor: [], borderRadius: 7 }] },
+        options: {
+          responsive: true, maintainAspectRatio: true,
+          layout: { padding: { top: 22 } },
+          plugins: {
+            legend: { display: false },
+            datalabels: {
+              anchor: 'end', align: 'top',
+              font: { weight: 'bold', size: 11 }, color: '#3B2A1A',
+              formatter: function (v) { return v > 0 ? v : ''; }
+            }
+          },
+          scales: {
+            y: { beginAtZero: true, ticks: { stepSize: 1, font: { size: 11 } }, grid: { color: 'rgba(59,42,26,0.06)' } },
+            x: { ticks: { font: { size: 10 }, maxRotation: 40 }, grid: { display: false } }
+          }
+        },
+        plugins: [ChartDataLabels]
+      });
+
+      function update() {
+        var monthVal = monthSel.value, gradeVal = gradeSel.value;
+        var counts = {};
+        gradeList.forEach(function (g) { counts[g] = 0; });
+
+        followups.forEach(function (f) {
+          var m = monthKey(f.Date);
+          if (!m) return;
+          var g = gradeKey(f);
+          if (monthVal && m !== monthVal) return;
+          if (gradeVal && g !== gradeVal) return;
+          if (counts[g] !== undefined) counts[g]++;
+        });
+
+        var labels = [], values = [], colors = [];
+        gradeList.forEach(function (g) {
+          if (gradeVal && g !== gradeVal) return;
+          if (!gradeVal && counts[g] === 0) return;
+          labels.push(g); values.push(counts[g]); colors.push(gradeColor(g));
+        });
+
+        chart.data.labels = labels;
+        chart.data.datasets[0].data = values;
+        chart.data.datasets[0].backgroundColor = colors;
+        chart.update();
+
+        legendEl.innerHTML = labels.map(function (g, i) {
+          return '<div class="legend-item"><div class="legend-swatch" style="background:' + colors[i] + '"></div>' +
+                 '<span>' + escHtml(g) + '</span><span class="legend-count">' + values[i] + '</span></div>';
+        }).join('');
+      }
+
+      monthSel.onchange = update;
+      gradeSel.onchange = update;
+      update();
+    }, 50);
+
+    return card;
+  }
+
+  /* ── CHART 2 — HOW WE REACHED OUT ── */
+
+  function buildTypeChart(followups) {
+    var card = el('div', 'chart-card');
+    card.innerHTML =
+      '<div class="chart-header">' +
+        '<div class="chart-title">How We Reached Out</div>' +
+        '<div class="chart-subtitle">Successful only · communication methods</div>' +
+      '</div>' +
+      '<div class="filter-row">' +
+        '<select id="typeMonthFilter" class="filter-select" aria-label="Month"></select>' +
+        '<select id="typeGradeFilter" class="filter-select" aria-label="Grade"></select>' +
+      '</div>' +
+      '<div class="chart-wrap"><canvas id="typeChart"></canvas></div>' +
+      '<div class="chart-legend" id="typeLegend"></div>';
+
+    setTimeout(function () {
+      var monthSel = document.getElementById('typeMonthFilter');
+      var gradeSel = document.getElementById('typeGradeFilter');
+      var legendEl = document.getElementById('typeLegend');
+
+      var monthSet = {}, gradeSet = {};
+      followups.forEach(function (f) {
+        var m = monthKey(f.Date);
+        if (m) monthSet[m] = 1;
+        gradeSet[gradeKey(f)] = 1;
+      });
+
+      monthSel.innerHTML = '<option value="">All Months</option>' +
+        Object.keys(monthSet).sort().map(function (m) { return '<option value="' + m + '">' + m + '</option>'; }).join('');
+      gradeSel.innerHTML = '<option value="">All Grades</option>' +
+        sortedGradeKeys(gradeSet).map(function (g) { return '<option value="' + escHtml(g) + '">' + escHtml(g) + '</option>'; }).join('');
+
+      var chart = new Chart(document.getElementById('typeChart'), {
+        type: 'bar',
+        data: { labels: [], datasets: [{ data: [], backgroundColor: [], borderRadius: 7 }] },
+        options: {
+          responsive: true, maintainAspectRatio: true,
+          layout: { padding: { top: 22 } },
+          plugins: {
+            legend: { display: false },
+            datalabels: {
+              anchor: 'end', align: 'top',
+              font: { weight: 'bold', size: 11 }, color: '#3B2A1A',
+              formatter: function (v) { return v > 0 ? v : ''; }
+            }
+          },
+          scales: {
+            y: { beginAtZero: true, ticks: { stepSize: 1, font: { size: 11 } }, grid: { color: 'rgba(59,42,26,0.06)' } },
+            x: { ticks: { font: { size: 11 } }, grid: { display: false } }
+          }
+        },
+        plugins: [ChartDataLabels]
+      });
+
+      function update() {
+        var monthVal = monthSel.value, gradeVal = gradeSel.value;
+        var counts = {};
+
+        followups.forEach(function (f) {
+          var m = monthKey(f.Date);
+          if (!m) return;
+          if (monthVal && m !== monthVal) return;
+          if (gradeVal && gradeKey(f) !== gradeVal) return;
+          var t = f.Type || 'Other';
+          counts[t] = (counts[t] || 0) + 1;
+        });
+
+        var labels = Object.keys(counts);
+        var values = labels.map(function (l) { return counts[l]; });
+        var colors = labels.map(function (l) { return TYPE_PALETTE[l] || '#9A8A7A'; });
+
+        chart.data.labels = labels;
+        chart.data.datasets[0].data = values;
+        chart.data.datasets[0].backgroundColor = colors;
+        chart.update();
+
+        legendEl.innerHTML = labels.map(function (t, i) {
+          return '<div class="legend-item"><div class="legend-swatch" style="background:' + colors[i] + '"></div>' +
+                 '<span>' + escHtml(t) + '</span><span class="legend-count">' + values[i] + '</span></div>';
+        }).join('');
+      }
+
+      monthSel.onchange = update;
+      gradeSel.onchange = update;
+      update();
+    }, 50);
+
+    return card;
+  }
+
+  /* ── GRADE LEADERBOARD ── */
+
+  function buildGradeLeaderboard(youth) {
+    var card = el('div', 'chart-card');
+    var header = el('div', 'chart-header');
+    header.innerHTML =
+      '<div class="chart-title">Grade Leaderboard</div>' +
+      '<div class="chart-subtitle">Ranked by % of Shabab in the Fold (followed up ≤ 30 days)</div>';
+    card.appendChild(header);
+
+    var gMap = {};
+    youth.forEach(function (y) {
+      var g = gradeKey(y);
+      if (!gMap[g]) gMap[g] = { ok: 0, total: 0 };
+      gMap[g].total++;
+      var d = daysSince(y.Latest_Followup);
+      if (d !== null && d <= 30) gMap[g].ok++;
+    });
+
+    var rows = Object.keys(gMap).map(function (g) {
+      return {
+        grade: g, ok: gMap[g].ok, total: gMap[g].total,
+        pct: gMap[g].total > 0 ? Math.round(gMap[g].ok / gMap[g].total * 100) : 0
+      };
+    });
+    rows.sort(function (a, b) { return b.pct - a.pct || b.ok - a.ok; });
+
+    var medals = ['🥇', '🥈', '🥉'];
+    var html = '<div style="overflow-x:auto"><table class="servant-table"><thead><tr>' +
+      '<th style="text-align:center">Rank</th><th>Grade</th>' +
+      '<th style="text-align:center">In Fold</th><th style="text-align:center">Total</th>' +
+      '<th style="text-align:center">% In Fold</th></tr></thead><tbody>';
+
+    rows.forEach(function (r, i) {
+      var rank = medals[i] || ('#' + (i + 1));
+      var barColor = r.pct >= 70 ? 'var(--sage)' : r.pct >= 40 ? 'var(--amber)' : 'var(--red)';
+      var dot = gradeColor(r.grade);
+
+      html += '<tr>' +
+        '<td class="num" style="font-size:calc(var(--base)*1.1)">' + rank + '</td>' +
+        '<td class="name-cell" style="display:flex;align-items:center;gap:8px">' +
+          '<span style="width:11px;height:11px;border-radius:3px;background:' + dot + ';display:inline-block;flex-shrink:0"></span>' +
+          escHtml(r.grade) +
+        '</td>' +
+        '<td class="num"><span class="pill pill-ok">' + r.ok + '</span></td>' +
+        '<td class="num">' + r.total + '</td>' +
+        '<td class="num" style="min-width:110px">' +
+          '<div style="display:flex;align-items:center;gap:6px">' +
+            '<div style="flex:1;height:8px;background:rgba(0,0,0,0.08);border-radius:4px;overflow:hidden">' +
+              '<div style="width:' + r.pct + '%;height:100%;background:' + barColor + ';border-radius:4px"></div>' +
+            '</div>' +
+            '<span style="font-size:calc(var(--base)*0.85);font-weight:700;color:' + barColor + ';min-width:36px">' + r.pct + '%</span>' +
+          '</div>' +
+        '</td>' +
+      '</tr>';
+    });
+
+    html += '</tbody></table></div>';
+    var wrap = el('div', '');
+    wrap.innerHTML = html;
+    card.appendChild(wrap);
+    return card;
+  }
+})();
+</script>
+<script src="https://accounts.google.com/gsi/client" async defer
+        onload="window.dispatchEvent(new Event('gsi-loaded'))"></script>
+</body>
+</html>

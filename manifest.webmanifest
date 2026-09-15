@@ -1,0 +1,24 @@
+{
+  "name": "The 99 — St. Mark Youth Follow-Up",
+  "short_name": "The 99",
+  "description": "Shepherding the flock: follow-up tracking for St. Mark youth ministry.",
+  "start_url": "index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#3B2A1A",
+  "theme_color": "#3B2A1A",
+  "lang": "en",
+  "dir": "auto",
+  "icons": [
+    { "src": "assets/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "assets/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "My Flock",  "short_name": "Flock",     "url": "index.html",
+      "icons": [{ "src": "assets/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Dashboard", "short_name": "Dashboard", "url": "dashboard.html",
+      "icons": [{ "src": "assets/icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}
