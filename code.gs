@@ -41,6 +41,110 @@ var WANDER_DAYS = 60;   // 31..60           -> Wandering
 var FOLLOWUP_TYPES = ['WhatsApp', 'Call', 'Home Visit', 'Outing'];
 
 // ===========================================================================
+// Setup / self-test
+// ===========================================================================
+
+/**
+ * RUN THIS ONCE from the editor, before your first deployment, and again any
+ * time you see an authorization error.
+ *
+ *   1. Select "setup" in the toolbar's function dropdown
+ *   2. Click Run
+ *   3. Approve the permissions Google asks for
+ *   4. Read the report in the Execution log
+ *
+ * Running it forces Google to grant both scopes this script needs — reading the
+ * spreadsheet, and the outbound call that verifies each sign-in token. An older
+ * authorization that predates those will otherwise fail at request time with
+ * "You do not have permission to call UrlFetchApp.fetch".
+ */
+function setup() {
+  var report = [];
+  var failed = false;
+
+  function ok(label, detail)   { report.push('OK    ' + label + (detail ? ' — ' + detail : '')); }
+  function bad(label, detail)  { failed = true; report.push('FAIL  ' + label + (detail ? ' — ' + detail : '')); }
+  function note(label, detail) { report.push('note  ' + label + (detail ? ' — ' + detail : '')); }
+
+  // 1. Spreadsheet access (grants the spreadsheets scope).
+  try {
+    var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+    ok('Spreadsheet', ss.getName());
+
+    [SHEETS.youths, SHEETS.servants, SHEETS.logs].forEach(function (name) {
+      var sh = ss.getSheetByName(name);
+      if (sh) ok('Sheet "' + name + '"', (sh.getLastRow() - 1) + ' rows');
+      else bad('Sheet "' + name + '"', 'not found');
+    });
+  } catch (e) {
+    bad('Spreadsheet', e.message);
+  }
+
+  // 2. Outbound request (grants script.external_request — the scope that fails
+  //    if the script was authorized before this code existed).
+  try {
+    var res = UrlFetchApp.fetch(
+      'https://oauth2.googleapis.com/tokeninfo?id_token=setup-probe',
+      { muteHttpExceptions: true });
+    // A 400 is the expected, correct answer to a deliberately invalid token.
+    ok('Outbound requests', 'Google replied ' + res.getResponseCode());
+  } catch (e) {
+    bad('Outbound requests', e.message);
+  }
+
+  // 3. Script properties.
+  var clientId = PropertiesService.getScriptProperties().getProperty('GOOGLE_CLIENT_ID');
+  if (!clientId) {
+    bad('GOOGLE_CLIENT_ID', 'not set — Project Settings > Script properties');
+  } else if (clientId.slice(-24) !== '.apps.googleusercontent.com'.slice(-24)) {
+    bad('GOOGLE_CLIENT_ID', 'should end in .apps.googleusercontent.com');
+  } else {
+    ok('GOOGLE_CLIENT_ID', clientId.slice(0, 18) + '…');
+  }
+
+  var leaders = PropertiesService.getScriptProperties().getProperty('LEADER_EMAILS');
+  note('LEADER_EMAILS', leaders || '(none — using the Servants sheet Role column)');
+
+  // 4. The access list, and who can see everything.
+  try {
+    var t = table(SHEETS.servants);
+    var iMail = pick(t.index, ['Mail', 'Email', 'E-mail']);
+    var iRole = pick(t.index, ['Role', 'Access', 'Level']);
+
+    if (iMail == null) {
+      bad('Servants.Mail column', 'missing — nobody can sign in');
+    } else {
+      var withMail = 0, leaderNames = [];
+      for (var r = 0; r < t.rows.length; r++) {
+        if (String(t.rows[r][iMail] || '').trim()) withMail++;
+        if (iRole != null) {
+          var role = String(t.rows[r][iRole] || '').trim().toLowerCase();
+          if (role.indexOf('leader') !== -1 || role.indexOf('admin') !== -1) {
+            leaderNames.push(String(t.rows[r][t.index.Full_Name] || '?').trim());
+          }
+        }
+      }
+      ok('Servants with an email', String(withMail));
+      if (iRole == null) {
+        bad('Servants.Role column', 'missing — nobody can open the dashboard');
+      } else if (!leaderNames.length) {
+        bad('Leaders', 'no row has Role = Leader — nobody can open the dashboard');
+      } else {
+        ok('Leaders', leaderNames.join(', '));
+      }
+    }
+  } catch (e) {
+    bad('Servants sheet', e.message);
+  }
+
+  var out = '\n' + report.join('\n') +
+    '\n\n' + (failed ? '>>> Something needs fixing — see the FAIL lines above.'
+                     : '>>> All good. Deploy > Manage deployments > edit > New version > Deploy.');
+  Logger.log(out);
+  return out;
+}
+
+// ===========================================================================
 // Entry points
 // ===========================================================================
 
