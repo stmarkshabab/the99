@@ -7,8 +7,6 @@
    =========================================================================== */
 
 var CFG = window.APP_CONFIG || {};
-var TOKEN_KEY = 'the99.idToken';
-var BOOT_KEY  = 'the99.bootstrap';
 
 /* ── VERSES ─────────────────────────────────────────────────────────────── */
 
@@ -47,91 +45,134 @@ function flockState(days) {
 }
 
 /* ── AUTH ───────────────────────────────────────────────────────────────── */
-/* Google Identity Services issues an ID token (valid one hour). Every API
-   call carries it; the backend verifies it and matches the email against the
-   Servants sheet. No password ever reaches this app. */
+/* Google signs you in once. We then swap that for an app session token that
+   lasts 30 days on a sliding window, and Google is not consulted again.
+   Two reasons: a Google ID token only lives an hour, and re-running its sign-in
+   on every page load pops the One Tap bubble each time you change tab. */
+
+var SESSION_KEY = 'the99.session';
+var BOOT_KEY    = 'the99.bootstrap';
+
+try { localStorage.removeItem('the99.idToken'); } catch (e) { /* ignore */ }
+
+/* Once a setup problem is on screen it must stay there: the gate's own
+   "not signed in yet" path runs afterwards and would otherwise clear it. */
+var CONFIG_ERROR = false;
+
+/** Shows a setup problem on the sign-in screen instead of a blank gate. */
+function showConfigError(message) {
+  CONFIG_ERROR = true;
+  var gate = document.getElementById('gate');
+  var app  = document.getElementById('app');
+  if (app) app.hidden = true;
+  if (gate) gate.hidden = false;
+  var note = document.getElementById('gate-error');
+  if (note) { note.hidden = false; note.textContent = message; }
+  var host = document.getElementById('gsi-button');
+  if (host) host.innerHTML = '';
+}
+
+var Session = {
+  token: null,
+  expiresAt: 0,
+
+  load: function () {
+    try {
+      var raw = localStorage.getItem(SESSION_KEY);
+      if (!raw) return false;
+      var s = JSON.parse(raw);
+      this.token = s.token;
+      this.expiresAt = s.expiresAt || 0;
+      return this.valid();
+    } catch (e) { return false; }
+  },
+
+  save: function (s) {
+    if (!s || !s.token) return;
+    this.token = s.token;
+    this.expiresAt = s.expiresAt || 0;
+    try { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch (e) { /* private mode */ }
+  },
+
+  clear: function () {
+    this.token = null;
+    this.expiresAt = 0;
+    try {
+      localStorage.removeItem(SESSION_KEY);
+      sessionStorage.removeItem(BOOT_KEY);
+    } catch (e) { /* ignore */ }
+  },
+
+  /* A minute of slack so a call started now cannot land after expiry. */
+  valid: function () { return !!this.token && this.expiresAt > Date.now() + 60000; }
+};
 
 var Auth = {
-  token: null,
-  profile: null,
+  idToken: null,          // held only long enough to trade for a session
   _onReady: null,
 
   init: function (onReady) {
     this._onReady = onReady;
-    this.token = localStorage.getItem(TOKEN_KEY);
 
-    if (this.token && !isExpired(this.token)) {
-      this.profile = decodeJwt(this.token);
-      onReady(this.profile);
-      this._gsi(true);            // renew quietly in the background
+    if (Session.load()) {
+      onReady();          // already signed in — Google is not involved at all
       return;
     }
-    this.clear();
-    this._gsi(false);
+    Session.clear();
+    this._gsi();
   },
 
-  _gsi: function (silent) {
+  _gsi: function () {
     var self = this;
+
+    // Catch an unfilled or malformed client id here, rather than letting Google
+    // answer with its own "Error 401: invalid_client" page.
+    var cid = String(CFG.GOOGLE_CLIENT_ID || '');
+    if (!cid || cid.indexOf('PASTE_') === 0 || !/\.apps\.googleusercontent\.com$/.test(cid)) {
+      showConfigError(
+        'GOOGLE_CLIENT_ID is not set correctly in config.js.\n\n' +
+        'It must end in .apps.googleusercontent.com — see README.md, steps 2 and 5.\n\n' +
+        'Currently: ' + (cid || '(empty)'));
+      return;
+    }
+
     function start() {
       if (!window.google || !google.accounts || !google.accounts.id) return;
       google.accounts.id.initialize({
-        client_id: CFG.GOOGLE_CLIENT_ID,
+        client_id: cid,
         callback: function (res) { self._accept(res.credential); },
         auto_select: true,
         cancel_on_tap_outside: false,
         use_fedcm_for_prompt: true
       });
-      if (!silent) {
-        var host = document.getElementById('gsi-button');
-        if (host) {
-          google.accounts.id.renderButton(host, {
-            theme: 'filled_black', size: 'large', shape: 'pill',
-            text: 'signin_with', width: Math.min(300, host.clientWidth || 300)
-          });
-        }
+
+      var host = document.getElementById('gsi-button');
+      if (host) {
+        google.accounts.id.renderButton(host, {
+          theme: 'filled_black', size: 'large', shape: 'pill',
+          text: 'signin_with', width: Math.min(300, host.clientWidth || 300)
+        });
       }
+      // Only ever prompted on the sign-in screen, never on an ordinary page load.
       google.accounts.id.prompt();
     }
+
     if (window.google && window.google.accounts) start();
     else window.addEventListener('gsi-loaded', start, { once: true });
   },
 
   _accept: function (credential) {
-    this.token = credential;
-    this.profile = decodeJwt(credential);
-    localStorage.setItem(TOKEN_KEY, credential);
-    if (this._onReady) this._onReady(this.profile);
-  },
-
-  clear: function () {
-    this.token = null;
-    this.profile = null;
-    localStorage.removeItem(TOKEN_KEY);
-    sessionStorage.removeItem(BOOT_KEY);
+    this.idToken = credential;
+    if (this._onReady) this._onReady();
   },
 
   signOut: function () {
     try { google.accounts.id.disableAutoSelect(); } catch (e) { /* not loaded */ }
-    this.clear();
+    this.idToken = null;
+    Session.clear();
     location.href = 'index.html';
   }
 };
-
-function decodeJwt(token) {
-  try {
-    var part = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
-    var json = decodeURIComponent(atob(part).split('').map(function (c) {
-      return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-    }).join(''));
-    return JSON.parse(json);
-  } catch (e) { return null; }
-}
-
-function isExpired(token) {
-  var p = decodeJwt(token);
-  if (!p || !p.exp) return true;
-  return (p.exp * 1000 - Date.now()) < 120000;   // under 2 minutes left counts as expired
-}
 
 /* ── API ────────────────────────────────────────────────────────────────── */
 /* Apps Script cannot answer a CORS preflight, so the request has to stay a
@@ -148,17 +189,21 @@ function api(action, payload) {
   payload = payload || {};
 
   if (!CFG.API_URL || CFG.API_URL.indexOf('PASTE_') === 0) {
-    return Promise.reject(ApiError(0, 'API_URL is not set yet — see step 3 of README.md'));
+    return Promise.reject(ApiError(0, 'API_URL is not set yet — see step 5 of README.md'));
   }
-  if (!Auth.token || isExpired(Auth.token)) {
-    Auth.clear();
-    return Promise.reject(ApiError(401, 'Your sign-in expired. Please sign in again.'));
+
+  var envelope = { action: action, payload: payload };
+  if (Session.valid())      envelope.sessionToken = Session.token;
+  else if (Auth.idToken)    envelope.idToken = Auth.idToken;
+  else {
+    Session.clear();
+    return Promise.reject(ApiError(401, 'Please sign in again.'));
   }
 
   return fetch(CFG.API_URL, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ action: action, idToken: Auth.token, payload: payload }),
+    body: JSON.stringify(envelope),
     redirect: 'follow'
   }).catch(function () {
     throw ApiError(0, navigator.onLine
@@ -173,9 +218,16 @@ function api(action, payload) {
           'The server sent an unexpected response. Check that the web app is ' +
           'deployed with access set to "Anyone".');
       }
+
+      // A freshly issued or slid-forward session rides back on any response.
+      if (body.session) {
+        Session.save(body.session);
+        Auth.idToken = null;          // no longer needed once traded in
+      }
+
       if (!body.ok) {
         var err = body.error || {};
-        if (err.code === 401) Auth.clear();
+        if (err.code === 401) Session.clear();
         throw ApiError(err.code || 500, err.message || 'Something went wrong');
       }
       return body.data;
@@ -190,7 +242,7 @@ function getBootstrap(force) {
     if (cached) { try { return Promise.resolve(JSON.parse(cached)); } catch (e) { /* refetch */ } }
   }
   return api('bootstrap').then(function (data) {
-    sessionStorage.setItem(BOOT_KEY, JSON.stringify(data));
+    try { sessionStorage.setItem(BOOT_KEY, JSON.stringify(data)); } catch (e) { /* ignore */ }
     return data;
   });
 }
@@ -209,6 +261,7 @@ function requireServant(opts) {
     var app  = document.getElementById('app');
 
     function showGate(message) {
+      if (CONFIG_ERROR) return;          // a config error outranks everything
       if (app) app.hidden = true;
       if (gate) {
         gate.hidden = false;
@@ -226,7 +279,7 @@ function requireServant(opts) {
     if (gv) gv.innerText = v.text;
     if (gr) gr.innerText = v.ref;
 
-    Auth.init(function (profile) {
+    Auth.init(function () {
       getBootstrap().then(function (boot) {
         if (boot.thresholds) {
           FOLD_DAYS   = boot.thresholds.fold   || FOLD_DAYS;
@@ -240,14 +293,14 @@ function requireServant(opts) {
         if (gate) gate.hidden = true;
         if (app) app.hidden = false;
         mountChrome(boot);
-        resolve({ profile: profile, boot: boot });
+        resolve({ profile: boot.user, boot: boot });
       }).catch(function (err) {
-        Auth.clear();
+        Session.clear();
         showGate(err.message);
       });
     });
 
-    if (!Auth.token) showGate(null);
+    if (!Session.valid()) showGate(null);
   });
 }
 
