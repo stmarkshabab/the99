@@ -285,6 +285,22 @@ function requireServant(opts) {
           FOLD_DAYS   = boot.thresholds.fold   || FOLD_DAYS;
           WANDER_DAYS = boot.thresholds.wander || WANDER_DAYS;
         }
+        /* Signing in must produce a session. If it did not, the deployed
+           backend predates session tokens and every page load would bounce
+           through Google again — an endless sign-in loop. Stop and say so. */
+        if (!Session.valid()) {
+          try { google.accounts.id.disableAutoSelect(); } catch (e) { /* not loaded */ }
+          showGate(
+            'The Apps Script backend is out of date.\n\n' +
+            'It signed you in but issued no session, so the app would ask you ' +
+            'to sign in again on every page.\n\n' +
+            'In the Apps Script editor: paste the current code.gs, then\n' +
+            'Deploy > Manage deployments > edit > Version: New version > Deploy.' +
+            (boot.apiVersion ? '\n\nBackend reports version ' + boot.apiVersion + ', expected 3.'
+                             : '\n\nBackend reports no version, expected 3.'));
+          return;
+        }
+
         if (opts.leaderOnly && !boot.user.isLeader) {
           showGate('This page is for leaders only.\n\nYou are signed in as ' +
                    boot.user.email + '.');
@@ -296,6 +312,8 @@ function requireServant(opts) {
         resolve({ profile: boot.user, boot: boot });
       }).catch(function (err) {
         Session.clear();
+        // Without this, auto_select signs straight back in and the failure loops.
+        try { google.accounts.id.disableAutoSelect(); } catch (e) { /* not loaded */ }
         showGate(err.message);
       });
     });
