@@ -8,7 +8,7 @@
 
 /* Build marker. Must match the backend's apiVersion (code.gs). Check in the
    console with THE99_BUILD; the backend's is at the /exec URL's "version". */
-var THE99_BUILD = 4;
+var THE99_BUILD = 5;
 window.THE99_BUILD = THE99_BUILD;
 
 var CFG = window.APP_CONFIG || {};
@@ -385,8 +385,9 @@ function mountChrome(boot) {
       '<button class="header-btn" id="installBtn" type="button" hidden>Install</button>' +
       '<button class="header-btn" id="signoutBtn" type="button">Sign out</button>';
     document.getElementById('signoutBtn').onclick = function () { Auth.signOut(); };
-    if (deferredInstall) document.getElementById('installBtn').hidden = false;
-    document.getElementById('installBtn').onclick = doInstall;
+    var ib = document.getElementById('installBtn');
+    ib.hidden = !canOfferInstall();
+    ib.onclick = doInstall;
   }
 
   var nav = document.getElementById('nav');
@@ -518,23 +519,107 @@ if ('serviceWorker' in navigator) {
 }
 
 var deferredInstall = null;
+
+/** Already running as an installed app? Then there is nothing to offer. */
+function isStandalone() {
+  return window.matchMedia('(display-mode: standalone)').matches ||
+         window.navigator.standalone === true;
+}
+
+/**
+ * iPhone and iPad, including iPadOS 13+ which reports itself as a Mac.
+ * Every browser on iOS is WebKit underneath, so this covers Chrome and
+ * Firefox there too — none of them can install programmatically.
+ */
+function isIos() {
+  var ua = navigator.userAgent || '';
+  return /iPad|iPhone|iPod/.test(ua) ||
+         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+}
+
+/** True when we have something useful to offer: a prompt, or instructions. */
+function canOfferInstall() {
+  return !isStandalone() && (!!deferredInstall || isIos());
+}
+
 window.addEventListener('beforeinstallprompt', function (e) {
-  e.preventDefault();
+  e.preventDefault();          // we show it from our own button instead
   deferredInstall = e;
   var btn = document.getElementById('installBtn');
-  if (btn) btn.hidden = false;
+  if (btn && !isStandalone()) btn.hidden = false;
+});
+
+window.addEventListener('appinstalled', function () {
+  deferredInstall = null;
+  var btn = document.getElementById('installBtn');
+  if (btn) btn.hidden = true;
 });
 
 function doInstall() {
-  if (!deferredInstall) return;
-  deferredInstall.prompt();
-  deferredInstall.userChoice.then(function (choice) {
-    if (choice.outcome === 'accepted') {
-      var btn = document.getElementById('installBtn');
-      if (btn) btn.hidden = true;
-    }
-    deferredInstall = null;
-  });
+  // Android and desktop Chromium: the real prompt.
+  if (deferredInstall) {
+    deferredInstall.prompt();
+    deferredInstall.userChoice.then(function (choice) {
+      if (choice.outcome === 'accepted') {
+        var btn = document.getElementById('installBtn');
+        if (btn) btn.hidden = true;
+      }
+      deferredInstall = null;
+    });
+    return;
+  }
+  // iOS has no such prompt, so show what to tap instead.
+  if (isIos()) showIosInstall();
+}
+
+/** The Add to Home Screen steps, in the app's own dress. */
+function showIosInstall() {
+  if (document.getElementById('installSheet')) return;
+
+  var share =
+    '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" ' +
+      'fill="none" stroke="currentColor" stroke-width="1.9" ' +
+      'stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M12 15V3"/><path d="M8 7l4-4 4 4"/>' +
+      '<path d="M5 12v7a2 2 0 002 2h10a2 2 0 002-2v-7"/></svg>';
+  var plus =
+    '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" ' +
+      'fill="none" stroke="currentColor" stroke-width="1.9" ' +
+      'stroke-linecap="round" stroke-linejoin="round">' +
+      '<rect x="3" y="3" width="18" height="18" rx="4"/>' +
+      '<path d="M12 8v8M8 12h8"/></svg>';
+
+  var wrap = document.createElement('div');
+  wrap.className = 'install-sheet';
+  wrap.id = 'installSheet';
+  wrap.setAttribute('role', 'dialog');
+  wrap.setAttribute('aria-modal', 'true');
+  wrap.setAttribute('aria-labelledby', 'installSheetTitle');
+  wrap.innerHTML =
+    '<div class="install-panel">' +
+      '<div class="install-emblem">🐑</div>' +
+      '<h2 class="install-title" id="installSheetTitle">Keep The 99 on your home screen</h2>' +
+      '<p class="install-lead">Safari on iPhone installs apps from the Share menu.</p>' +
+      '<ol class="install-steps">' +
+        '<li><span class="install-icon">' + share + '</span>' +
+            '<span>Tap <strong>Share</strong> at the bottom of Safari</span></li>' +
+        '<li><span class="install-icon">' + plus + '</span>' +
+            '<span>Choose <strong>Add to Home Screen</strong></span></li>' +
+        '<li><span class="install-icon">🐑</span>' +
+            '<span>Tap <strong>Add</strong> — it opens like any other app</span></li>' +
+      '</ol>' +
+      '<button class="install-close" type="button">Got it</button>' +
+    '</div>';
+
+  function close() { wrap.remove(); document.removeEventListener('keydown', onKey); }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+
+  wrap.querySelector('.install-close').onclick = close;
+  wrap.addEventListener('click', function (e) { if (e.target === wrap) close(); });
+  document.addEventListener('keydown', onKey);
+
+  document.body.appendChild(wrap);
+  wrap.querySelector('.install-close').focus();
 }
 
 /* A quiet strip when the connection drops, so a failed save makes sense. */

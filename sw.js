@@ -3,7 +3,7 @@
    never cached: every API call goes to the network so the sheet stays the
    single source of truth and nobody acts on a stale flock. */
 
-var VERSION = 'the99-v4';
+var VERSION = 'the99-v5';
 var SHELL = [
   'index.html',
   'shepherds.html',

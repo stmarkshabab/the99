@@ -142,10 +142,16 @@ Commit it. That is the last step — open the site and sign in.
 
 ### 6. Tell everyone to install it
 
-- **Android / Chrome:** an **Install** button appears in the header; or
-  ⋮ → *Add to Home screen*.
-- **iPhone / Safari:** Share → **Add to Home Screen**. (iOS gives no install
-  button; this is Apple's behaviour, not a bug.)
+- **Android / Chrome:** an **Install** button appears in the header and raises
+  the real install prompt.
+- **iPhone / iPad:** the same **Install** button appears, but iOS has no
+  programmatic install prompt — Apple does not implement `beforeinstallprompt`,
+  and every browser on iOS is Safari's engine underneath, so Chrome and Firefox
+  there behave identically. The button therefore opens a short panel showing
+  the steps: Share → **Add to Home Screen** → Add.
+- **Already installed?** The button hides itself, on both platforms.
+- **Other browsers** (desktop Firefox, Firefox on Android) can still install
+  from their own menus, but expose no event to detect it, so no button appears.
 
 Your existing QR code points at the old Apps Script URL — regenerate it against
 the new address. One QR now works for everybody, because the app knows who you
