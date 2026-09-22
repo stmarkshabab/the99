@@ -40,6 +40,13 @@ var WANDER_DAYS = 60;   // 31..60           -> Wandering
 
 var FOLLOWUP_TYPES = ['WhatsApp', 'Call', 'Home Visit', 'Outing'];
 
+/* How long a servant stays signed in. A Google ID token only lasts an hour, so
+   we verify it once and then issue our own token instead — otherwise everyone
+   is asked to sign in again every hour, and on iOS (where an installed app has
+   its own cookie jar) silent renewal cannot work at all. The window slides:
+   using the app at all refreshes it, so an active servant never signs in twice. */
+var SESSION_DAYS = 30;
+
 // ===========================================================================
 // Setup / self-test
 // ===========================================================================
@@ -105,6 +112,18 @@ function setup() {
   var leaders = PropertiesService.getScriptProperties().getProperty('LEADER_EMAILS');
   note('LEADER_EMAILS', leaders || '(none — using the Servants sheet Role column)');
 
+  // 3b. Session signing key — created here so no live request has to make it.
+  try {
+    var existed = !!PropertiesService.getScriptProperties().getProperty('SESSION_SECRET');
+    var probe = makeSession('setup-probe@example.com');
+    var back = verifySessionToken(probe.token);
+    if (back.email !== 'setup-probe@example.com') throw new Error('round-trip mismatch');
+    ok('Session signing', (existed ? 'key already present' : 'key created') +
+       ', sessions last ' + SESSION_DAYS + ' days');
+  } catch (e) {
+    bad('Session signing', e.message);
+  }
+
   // 4. The access list, and who can see everything.
   try {
     var t = table(SHEETS.servants);
@@ -150,7 +169,7 @@ function setup() {
 
 function doGet(e) {
   if (!e || !e.parameter || !e.parameter.action) {
-    return json({ ok: true, service: 'the99-api', version: 2 });
+    return json({ ok: true, service: 'the99-api', version: 4 });
   }
   return handle(e.parameter);
 }
@@ -167,18 +186,25 @@ function doPost(e) {
 
 function handle(req) {
   try {
-    var user = authenticate(req.idToken);
+    var auth = authenticate(req);
+    var user = auth.user;
     var payload = req.payload || {};
+    var data;
 
     switch (req.action) {
-      case 'bootstrap':   return json({ ok: true, data: bootstrap(user) });
-      case 'flock':       return json({ ok: true, data: getFlock(user, payload) });
-      case 'logFollowup': return json({ ok: true, data: logFollowUp(user, payload) });
-      case 'updateNotes': return json({ ok: true, data: updateNotes(user, payload) });
-      case 'dashboard':   return json({ ok: true, data: getDashboardData(user) });
+      case 'bootstrap':   data = bootstrap(user); break;
+      case 'flock':       data = getFlock(user, payload); break;
+      case 'logFollowup': data = logFollowUp(user, payload); break;
+      case 'updateNotes': data = updateNotes(user, payload); break;
+      case 'dashboard':   data = getDashboardData(user); break;
       default:
         throw httpError(400, 'Unknown action: ' + req.action);
     }
+
+    var body = { ok: true, data: data };
+    // Present only when a session was just issued or slid forward.
+    if (auth.session) body.session = auth.session;
+    return json(body);
   } catch (err) {
     var code = (err && err.httpCode) ? err.httpCode : 500;
     return json({ ok: false, error: { code: code, message: String((err && err.message) || err) } });
@@ -189,9 +215,56 @@ function handle(req) {
 // Auth — the Servants sheet is the access list
 // ===========================================================================
 
-function authenticate(idToken) {
-  if (!idToken) throw httpError(401, 'Sign-in required');
+/**
+ * Resolves the caller from either an app session token (the normal case) or a
+ * fresh Google ID token (first sign-in only), then matches the email against
+ * the Servants sheet — which stays the access list either way, so removing a
+ * row revokes access immediately, without waiting for a session to lapse.
+ *
+ * Returns { user, session } where session is present only when one was just
+ * issued or refreshed.
+ */
+function authenticate(req) {
+  var email, session = null;
 
+  if (req.sessionToken) {
+    var claims = verifySessionToken(req.sessionToken);
+    email = claims.email;
+    // Slide the window once past the halfway mark, so an app in regular use
+    // never expires, but an abandoned token still dies on schedule.
+    var life = claims.expiresAt - claims.issuedAt;
+    if (Date.now() > claims.issuedAt + life / 2) session = makeSession(email);
+
+  } else if (req.idToken) {
+    email = verifyGoogleIdToken(req.idToken);
+    session = makeSession(email);
+
+  } else {
+    throw httpError(401, 'Sign-in required');
+  }
+
+  var servant = findServant(email);
+  if (!servant) {
+    throw httpError(403,
+      'This account is not on the Servants list.\n\n' + email +
+      '\n\nAsk a leader to add it to the Servants sheet.');
+  }
+
+  return {
+    user: {
+      email: email,
+      name: servant.name,
+      year: servant.year,
+      mobile: servant.mobile,
+      isLeader: servant.isLeader,
+      picture: ''
+    },
+    session: session
+  };
+}
+
+/** Checks a Google ID token with Google. Only runs at first sign-in. */
+function verifyGoogleIdToken(idToken) {
   var clientId = prop('GOOGLE_CLIENT_ID', true);
   var cache = CacheService.getScriptCache();
   var key = 'tok_' + Utilities.base64EncodeWebSafe(
@@ -216,33 +289,89 @@ function authenticate(idToken) {
     var msLeft = Number(info.exp) * 1000 - Date.now();
     if (msLeft <= 0) throw httpError(401, 'Your sign-in has expired. Please sign in again.');
 
-    // Never cache a verification beyond the token's own lifetime.
     cache.put(key, JSON.stringify(info), Math.max(1, Math.min(1800, Math.floor(msLeft / 1000) - 60)));
   }
 
   var email = String(info.email || '').trim().toLowerCase();
   if (!email) throw httpError(401, 'No email on the sign-in token');
+  return email;
+}
 
-  var servant = findServant(email);
-  if (!servant) {
-    throw httpError(403,
-      'This account is not on the Servants list.\n\n' + email +
-      '\n\nAsk a leader to add it to the Servants sheet.');
+// ---------------------------------------------------------------------------
+// App session tokens
+// ---------------------------------------------------------------------------
+
+/**
+ * The signing key, created on first use and kept in Script Properties.
+ * Changing or deleting it signs everybody out, which is the way to do that.
+ */
+function sessionSecret() {
+  var props = PropertiesService.getScriptProperties();
+  var secret = props.getProperty('SESSION_SECRET');
+  if (secret) return secret;
+
+  // Two first-requests arriving together must not each mint a different key,
+  // which would silently invalidate one of the two sessions.
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    secret = props.getProperty('SESSION_SECRET');
+    if (!secret) {
+      secret = Utilities.getUuid() + Utilities.getUuid();
+      props.setProperty('SESSION_SECRET', secret);
+    }
+    return secret;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** payload.signature, both base64url. The payload is readable but not forgeable. */
+function makeSession(email) {
+  var now = Date.now();
+  var claims = { e: email, i: now, x: now + SESSION_DAYS * 86400000 };
+  var body = Utilities.base64EncodeWebSafe(JSON.stringify(claims));
+  return {
+    token: body + '.' + signPart(body),
+    expiresAt: claims.x
+  };
+}
+
+function signPart(body) {
+  var raw = Utilities.computeHmacSha256Signature(body, sessionSecret());
+  return Utilities.base64EncodeWebSafe(raw);
+}
+
+function verifySessionToken(token) {
+  var parts = String(token || '').split('.');
+  if (parts.length !== 2) throw httpError(401, 'Please sign in again.');
+
+  // Compare every byte regardless of where the first difference falls, so the
+  // time taken says nothing about how close a forged signature was.
+  var expected = signPart(parts[0]);
+  if (expected.length !== parts[1].length) throw httpError(401, 'Please sign in again.');
+  var diff = 0;
+  for (var i = 0; i < expected.length; i++) {
+    diff |= expected.charCodeAt(i) ^ parts[1].charCodeAt(i);
+  }
+  if (diff !== 0) throw httpError(401, 'Please sign in again.');
+
+  var claims;
+  try {
+    claims = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(parts[0])).getDataAsString());
+  } catch (e) {
+    throw httpError(401, 'Please sign in again.');
   }
 
-  return {
-    email: email,
-    name: servant.name,
-    year: servant.year,
-    mobile: servant.mobile,
-    isLeader: servant.isLeader,
-    picture: info.picture || ''
-  };
+  if (!claims.e || !claims.x) throw httpError(401, 'Please sign in again.');
+  if (Date.now() > claims.x) throw httpError(401, 'Your session has expired. Please sign in again.');
+
+  return { email: String(claims.e).toLowerCase(), issuedAt: claims.i || 0, expiresAt: claims.x };
 }
 
 /** Looks the caller up by the Mail column, and reads the optional Role column. */
 function findServant(email) {
-  var t = table(SHEETS.servants);
+  var t = cachedTable(SHEETS.servants);
   var iMail = pick(t.index, ['Mail', 'Email', 'E-mail']);
   var iName = pick(t.index, ['Full_Name', 'Full Name', 'Name']);
   var iRole = pick(t.index, ['Role', 'Access', 'Level']);
@@ -281,6 +410,7 @@ function requireLeader(user) {
 
 function bootstrap(user) {
   return {
+    apiVersion: 4,
     user: {
       name: user.name,
       email: user.email,
@@ -303,7 +433,7 @@ function getFlock(user, payload) {
   if (!who || !user.isLeader) who = user.name;
   if (who !== user.name && !user.isLeader) requireLeader(user);
 
-  var t = table(SHEETS.youths);
+  var t = cachedTable(SHEETS.youths);
   var lastLog = lastFollowupByYouth();
   var wanted = who.toLowerCase();
   var out = [];
@@ -360,6 +490,7 @@ function logFollowUp(user, payload) {
     sheet.appendRow(headers.map(function (h) {
       return Object.prototype.hasOwnProperty.call(values, h) ? values[h] : '';
     }));
+    invalidate(SHEETS.logs);      // Latest_Followup is derived from this table
 
     return {
       youthId: youth.youthId,
@@ -378,45 +509,74 @@ function updateNotes(user, payload) {
   var youthId = String(payload.youthId || '').trim();
   var notes = String(payload.notes == null ? '' : payload.notes);
 
-  var youth = findYouth(youthId);
-  if (!youth) throw httpError(404, "Youth_ID '" + youthId + "' not found in sheet.");
-  if (!user.isLeader && youth.servantName.toLowerCase() !== user.name.toLowerCase()) {
-    throw httpError(403, youth.fullName + ' is not in your flock.');
-  }
-
-  var t = table(SHEETS.youths);
-  var col = pick(t.index, ['Notes', 'notes']);
-  if (col == null) throw httpError(500, "Column 'Notes' not found in sheet.");
-
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(15000)) throw httpError(503, 'The sheet is busy — please try again.');
   try {
+    /* Resolve the row inside the lock and from a live read, never the cache:
+       this writes by row number, and an inserted or deleted row would otherwise
+       put the note on the wrong youth. */
+    var youth = findYouth(youthId, true);
+    if (!youth) throw httpError(404, "Youth_ID '" + youthId + "' not found in sheet.");
+    if (!user.isLeader && youth.servantName.toLowerCase() !== user.name.toLowerCase()) {
+      throw httpError(403, youth.fullName + ' is not in your flock.');
+    }
+
+    var col = pick(table(SHEETS.youths).index, ['Notes', 'notes']);
+    if (col == null) throw httpError(500, "Column 'Notes' not found in sheet.");
+
     sheetByName(SHEETS.youths).getRange(youth.rowNumber, col + 1).setValue(notes);
+    invalidate(SHEETS.youths);
     return { youthId: youth.youthId, notes: notes };
   } finally {
     lock.releaseLock();
   }
 }
 
-/** Everything the dashboard and shepherds pages need. Leaders only. */
+/**
+ * Everything the dashboard and shepherds pages need — and nothing else.
+ *
+ * These two pages only ever group and count; they never show a phone number or
+ * an address. Sending whole rows meant ~380KB per load, most of it contact
+ * details going straight to the bin. Projecting to the fields actually read
+ * cuts that by about 70% and keeps the data off the wire entirely.
+ */
 function getDashboardData(user) {
   requireLeader(user);
 
-  var t = table(SHEETS.youths);
+  var t = cachedTable(SHEETS.youths);
   var lastLog = lastFollowupByYouth();
+  var iId = t.index.Youth_ID;
   var youths = [];
+
   for (var r = 0; r < t.rows.length; r++) {
-    if (!String(t.rows[r][t.index.Youth_ID] || '').trim()) continue;
-    youths.push(youthObject(t, t.rows[r], lastLog));
+    var row = t.rows[r];
+    var id = String(row[iId] || '').trim();
+    if (!id) continue;
+    var lf = lastLog[id] || null;
+    youths.push({
+      Year: normYear(row[t.index.Year]),
+      Gender: plain(row[t.index.Gender]),
+      Servant_Name: plain(row[t.index.Servant_Name]),
+      Latest_Followup: lf
+        ? Utilities.formatDate(lf, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+        : null
+    });
   }
 
-  var tl = table(SHEETS.logs);
+  var tl = cachedTable(SHEETS.logs);
+  var LOG_FIELDS = ['Date', 'Year', 'Gender', 'Type', 'Successful?', 'Servant_Name'];
   var followUps = [];
+
   for (var i = 0; i < tl.rows.length; i++) {
-    var row = tl.rows[i];
-    if (!String(row[tl.index.Youth_ID] || '').trim()) continue;
+    var lrow = tl.rows[i];
+    if (!String(lrow[tl.index.Youth_ID] || '').trim()) continue;
     var obj = {};
-    tl.headers.forEach(function (h, j) { if (h) obj[h] = plain(row[j]); });
+    for (var f = 0; f < LOG_FIELDS.length; f++) {
+      var key = LOG_FIELDS[f];
+      var col = tl.index[key];
+      obj[key] = col == null ? '' : plain(lrow[col]);
+    }
+    obj.Year = normYear(obj.Year);
     followUps.push(obj);
   }
 
@@ -443,6 +603,81 @@ function youthObject(t, row, lastLog) {
   return obj;
 }
 
+/* Reading a sheet is by far the slowest thing this script does, and every
+   request was doing it two or three times over. These wrap the reads in the
+   script cache. CacheService caps a value at 100KB, so a table is split across
+   numbered chunks and stitched back together. */
+
+var CACHE_SECONDS = {
+  youths: 60,
+  logs:   60,
+  // Shorter: this one is the access list, so a removed servant should lose
+  // access promptly rather than lingering for a full minute.
+  servants: 20
+};
+
+function cacheRead(key) {
+  var c = CacheService.getScriptCache();
+  var meta = c.get(key + '_n');
+  if (!meta) return null;
+
+  var n = Number(meta), names = [];
+  for (var i = 0; i < n; i++) names.push(key + '_' + i);
+
+  var parts = c.getAll(names), out = '';
+  for (var j = 0; j < n; j++) {
+    var piece = parts[key + '_' + j];
+    if (piece == null) return null;      // a chunk expired: treat as a miss
+    out += piece;
+  }
+  try { return JSON.parse(out); } catch (e) { return null; }
+}
+
+function cacheWrite(key, obj, seconds) {
+  try {
+    var text = JSON.stringify(obj);
+    var CHUNK = 90000;
+    var n = Math.ceil(text.length / CHUNK);
+    if (n > 25) return;                  // implausibly large; skip rather than thrash
+
+    var map = {};
+    for (var i = 0; i < n; i++) map[key + '_' + i] = text.substr(i * CHUNK, CHUNK);
+    map[key + '_n'] = String(n);
+    CacheService.getScriptCache().putAll(map, seconds);
+  } catch (e) {
+    // A cache failure must never fail the request.
+  }
+}
+
+function cacheDrop(key) {
+  try {
+    var c = CacheService.getScriptCache();
+    var meta = c.get(key + '_n');
+    var names = [key + '_n'];
+    if (meta) for (var i = 0; i < Number(meta); i++) names.push(key + '_' + i);
+    c.removeAll(names);
+  } catch (e) { /* ignore */ }
+}
+
+/** table(), but served from the cache when it is warm. */
+function cachedTable(name) {
+  var key = 'tbl_' + name.replace(/[^A-Za-z0-9]/g, '');
+  var hit = cacheRead(key);
+  if (hit && hit.headers) return hit;
+
+  var t = table(name);
+  var ttl = CACHE_SECONDS[name === SHEETS.youths ? 'youths'
+          : name === SHEETS.logs ? 'logs'
+          : 'servants'] || 60;
+  cacheWrite(key, t, ttl);
+  return t;
+}
+
+/** Call after any write, so the next read does not serve what we just changed. */
+function invalidate(name) {
+  cacheDrop('tbl_' + name.replace(/[^A-Za-z0-9]/g, ''));
+}
+
 function spreadsheet() { return SpreadsheetApp.openById(SPREADSHEET_ID); }
 
 function sheetByName(name) {
@@ -465,7 +700,7 @@ function table(name) {
 }
 
 function findYouth(youthId) {
-  var t = table(SHEETS.youths);
+  var t = cachedTable(SHEETS.youths);
   for (var r = 0; r < t.rows.length; r++) {
     if (String(t.rows[r][t.index.Youth_ID] || '').trim() === youthId) {
       return {
@@ -483,7 +718,7 @@ function findYouth(youthId) {
 
 /** Youth_ID -> most recent follow-up Date, read straight from the log. */
 function lastFollowupByYouth() {
-  var t = table(SHEETS.logs);
+  var t = cachedTable(SHEETS.logs);
   var out = {};
   for (var r = 0; r < t.rows.length; r++) {
     var id = String(t.rows[r][t.index.Youth_ID] || '').trim();
@@ -524,14 +759,28 @@ function pick(index, names) {
   return null;
 }
 
-/** Dates become yyyy-MM-dd strings, matching what the pages already expect. */
+/**
+ * Dates become yyyy-MM-dd strings, matching what the pages already expect.
+ *
+ * A cached table has been through JSON, so its date cells arrive as ISO strings
+ * rather than Date objects. Both are normalised here, so a value looks the same
+ * whether it came from the sheet or from the cache.
+ */
 function plain(v) {
   if (v instanceof Date) {
     return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
   }
   if (v == null) return '';
-  // A formula error such as #N/A arrives as a string; treat it as empty.
-  if (typeof v === 'string' && v.charAt(0) === '#' && v.toUpperCase() === v) return '';
+  if (typeof v === 'string') {
+    if (/^\d{4}-\d{2}-\d{2}T[\d:.]+Z?$/.test(v)) {
+      var d = new Date(v);
+      if (!isNaN(d.getTime())) {
+        return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+      }
+    }
+    // A formula error such as #N/A arrives as a string; treat it as empty.
+    if (v.charAt(0) === '#' && v.toUpperCase() === v) return '';
+  }
   return v;
 }
 

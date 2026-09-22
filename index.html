@@ -11,6 +11,9 @@
 <meta name="apple-mobile-web-app-title" content="The 99">
 <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
 <link rel="icon" href="assets/icons/icon-192.png">
+<!-- The first API call is the slowest thing on the page; warm the connection now. -->
+<link rel="preconnect" href="https://script.google.com">
+<link rel="preconnect" href="https://script.googleusercontent.com">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400;1,600&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -107,15 +110,17 @@
   });
 
   function loadData() {
-    api('flock', { servant: SERVANT_NAME }).then(function (data) {
-      FLOCK = data.youths || [];
-      document.getElementById('filterBar').hidden = FLOCK.length === 0;
-      renderSummary();
-      renderCards();
-    }).catch(function (err) {
-      document.getElementById('cards').innerHTML =
-        '<div class="empty-state"><div class="icon">⚠️</div><p>' + escHtml(err.message) + '</p></div>';
-    });
+    apiCached('flock.' + SERVANT_NAME, 'flock', { servant: SERVANT_NAME },
+      function (data) {
+        FLOCK = data.youths || [];
+        document.getElementById('filterBar').hidden = FLOCK.length === 0;
+        renderSummary();
+        renderCards();
+      },
+      function (err) {
+        document.getElementById('cards').innerHTML =
+          '<div class="empty-state"><div class="icon">⚠️</div><p>' + escHtml(err.message) + '</p></div>';
+      });
   }
 
   /* ── SUMMARY CHIPS (also the state filter) ─────────────────────────── */
@@ -367,6 +372,10 @@
       setTimeout(function () {
         document.getElementById('reloadOverlay').classList.add('show');
         api('flock', { servant: SERVANT_NAME }).then(function (data) {
+          try {
+            localStorage.setItem('the99.cache.flock.' + SERVANT_NAME,
+              JSON.stringify({ at: Date.now(), data: data }));
+          } catch (e) { /* ignore */ }
           document.getElementById('reloadOverlay').classList.remove('show');
           FLOCK = data.youths || [];
           renderSummary();

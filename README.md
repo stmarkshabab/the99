@@ -89,10 +89,31 @@ isn't on it cannot get in.
    | `GOOGLE_CLIENT_ID` | the Client ID from step 2 |
    | `LEADER_EMAILS` | *(optional)* extra leader emails, comma-separated |
 
-4. **Deploy → New deployment → Web app**
+4. **Show the manifest so the scopes are explicit.** Project Settings → tick
+   *Show "appsscript.json" manifest file in editor*, then replace that file with
+   this repo's `appsscript.json`. (Adjust `timeZone` if you are not in Cairo.)
+
+5. **Run `setup` once.** Pick `setup` in the toolbar's function dropdown and
+   click **Run**. Approve the permissions Google asks for, then read the
+   Execution log — it checks the sheet, the tabs, the outbound call, your
+   client ID, and who has `Role = Leader`, and tells you what is missing.
+
+   This step is not optional. It is what grants the script permission to make
+   the outbound call that verifies each sign-in. Skip it and every request fails
+   with *"You do not have permission to call UrlFetchApp.fetch"*.
+
+6. **Deploy → New deployment → Web app**
    - Execute as: **Me**
    - Who has access: **Anyone**
-5. Authorise it when prompted, then copy the **Web app URL** (ends in `/exec`).
+
+7. Copy the **Web app URL** (ends in `/exec`).
+
+> **Whenever you edit `code.gs` afterwards**, the live app does *not* change
+> until you go to **Deploy → Manage deployments → ✏️ edit → Version: New
+> version → Deploy**. Updating the existing deployment this way keeps the same
+> URL, so you never have to touch `config.js` again. Creating a *new* deployment
+> instead gives you a second URL with its own access setting — the usual cause
+> of a sudden `401`.
 
 > **"Anyone" does not mean the data is public.** It only lets the browser reach
 > the endpoint. Every single request must carry a Google ID token that the
@@ -153,7 +174,37 @@ are from your sign-in instead of from the link.
 
 - **Offline:** the app opens offline, but saving needs a connection — a strip
   appears when you drop off the network. Reach-outs are not queued.
-- **Sign-in lasts an hour**, then renews silently in the background.
+- **Signing in lasts 30 days.** Google is asked once; the backend then issues
+  its own session token, and the window slides forward whenever the app is used,
+  so an active servant never signs in twice. Google ID tokens themselves last
+  only an hour, and on iOS an installed app has its own cookie jar, so silent
+  renewal through Google cannot work there — this is why the session is ours.
+- **To sign everyone out at once**, delete the `SESSION_SECRET` script property.
+  A new one is created on the next request and every old token stops verifying.
+- **Removing a row from the `Servants` sheet revokes access within ~20 seconds**
+  — the sheet is re-checked on every request, not just at sign-in, and that
+  table is cached for 20 seconds.
+
+## Speed
+
+Apps Script takes a second or two to answer, and reading a sheet is the slowest
+thing it does. Three things keep the app feeling quick:
+
+- **The backend caches each sheet** (`Youths` and `FollowUp Logs` for 60s,
+  `Servants` for 20s) in the script cache, chunked because a cache value is
+  capped at 100KB. Writes invalidate the affected table straight away, so you
+  never see your own change undone. Anything that writes by row number
+  re-reads the sheet live — a cached row position would be wrong if a row had
+  been inserted meanwhile.
+- **The pages render from the last response first**, then refresh from the
+  network and re-render. Revisiting a tab shows content in about 0.2s instead
+  of waiting a second or two on every navigation.
+- **The dashboard only receives the fields it uses.** It groups and counts; it
+  never shows a phone number. Sending whole rows meant ~380KB a load, so it is
+  projected down to about 110KB — and the contact details stay off the wire.
+
+If you change anything in `assets/`, **bump `VERSION` in `sw.js`**, or phones
+will keep serving the cached copy.
 - **Thresholds** (In the Fold ≤ 30 days, Wandering 31–60, Lost Sheep over 60)
   are set once, in `code.gs`. The pages read them on sign-in.
 - **After changing `sw.js`**, bump `VERSION` so phones pick up the new files.

@@ -5,8 +5,8 @@
  */
 window.APP_CONFIG = {
   // Apps Script: Deploy > New deployment > Web app > copy the /exec URL.
-  API_URL: 'https://script.google.com/macros/s/AKfycbwYhZknRAJVe8AJcIbsT49UmhtGrdrYBYbjz3lghM-GdMHNFICG-9eS0G0dSUDyK6AYWQ/exec',
+  API_URL: 'PASTE_YOUR_APPS_SCRIPT_EXEC_URL_HERE',
 
   // Google Cloud console > Credentials > OAuth client ID (Web application).
-  GOOGLE_CLIENT_ID: '85459451769-pperaup23gefg3etlk2u0q62dve2vp1l.apps.googleusercontent.com'
+  GOOGLE_CLIENT_ID: 'PASTE_YOUR_CLIENT_ID_HERE.apps.googleusercontent.com'
 };

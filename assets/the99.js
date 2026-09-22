@@ -6,6 +6,11 @@
    and therefore be installable.
    =========================================================================== */
 
+/* Build marker. Must match the backend's apiVersion (code.gs). Check in the
+   console with THE99_BUILD; the backend's is at the /exec URL's "version". */
+var THE99_BUILD = 4;
+window.THE99_BUILD = THE99_BUILD;
+
 var CFG = window.APP_CONFIG || {};
 
 /* ── VERSES ─────────────────────────────────────────────────────────────── */
@@ -101,6 +106,7 @@ var Session = {
       localStorage.removeItem(SESSION_KEY);
       sessionStorage.removeItem(BOOT_KEY);
     } catch (e) { /* ignore */ }
+    clearApiCache();
   },
 
   /* A minute of slack so a call started now cannot land after expiry. */
@@ -235,6 +241,47 @@ function api(action, payload) {
   });
 }
 
+/**
+ * Renders from the last response immediately, then refreshes from the network.
+ *
+ * Apps Script takes a second or two to answer, which made every tab switch feel
+ * like a reload. `onData(data, isFresh)` is therefore called up to twice: once
+ * with cached data if any (isFresh false), then again with the live answer.
+ * `onError` only fires when there was nothing cached to fall back on.
+ */
+function apiCached(key, action, payload, onData, onError) {
+  var full = 'the99.cache.' + key;
+  var served = false;
+
+  try {
+    var raw = localStorage.getItem(full);
+    if (raw) {
+      var hit = JSON.parse(raw);
+      if (hit && hit.data) { served = true; onData(hit.data, false); }
+    }
+  } catch (e) { /* unreadable cache is just a miss */ }
+
+  return api(action, payload).then(function (data) {
+    try {
+      localStorage.setItem(full, JSON.stringify({ at: Date.now(), data: data }));
+    } catch (e) { /* quota or private mode — not fatal */ }
+    onData(data, true);
+  }).catch(function (err) {
+    // Stale data already on screen beats an error message.
+    if (!served && onError) onError(err);
+    else if (served) console.warn('Refresh failed, showing cached data:', err.message);
+  });
+}
+
+/** Drops the cached copies; used on sign-out so nothing leaks between accounts. */
+function clearApiCache() {
+  try {
+    Object.keys(localStorage).forEach(function (k) {
+      if (k.indexOf('the99.cache.') === 0) localStorage.removeItem(k);
+    });
+  } catch (e) { /* ignore */ }
+}
+
 /** bootstrap() is wanted by every page, so keep it for the session. */
 function getBootstrap(force) {
   if (!force) {
@@ -273,6 +320,14 @@ function requireServant(opts) {
       }
     }
 
+    /* With a session in hand the servant is going to be let in, so put the
+       shell up now rather than after the first round trip. Waiting meant a
+       blank page for the whole of it — on a phone, seconds of nothing. */
+    if (Session.valid()) {
+      if (gate) gate.hidden = true;
+      if (app) app.hidden = false;
+    }
+
     var v = randomVerse();
     var gv = document.getElementById('gate-verse');
     var gr = document.getElementById('gate-ref');
@@ -296,8 +351,8 @@ function requireServant(opts) {
             'to sign in again on every page.\n\n' +
             'In the Apps Script editor: paste the current code.gs, then\n' +
             'Deploy > Manage deployments > edit > Version: New version > Deploy.' +
-            (boot.apiVersion ? '\n\nBackend reports version ' + boot.apiVersion + ', expected 3.'
-                             : '\n\nBackend reports no version, expected 3.'));
+            (boot.apiVersion ? '\n\nBackend reports version ' + boot.apiVersion + ', expected 4.'
+                             : '\n\nBackend reports no version, expected 4.'));
           return;
         }
 
