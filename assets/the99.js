@@ -8,7 +8,7 @@
 
 /* Build marker. Must match the backend's apiVersion (code.gs). Check in the
    console with THE99_BUILD; the backend's is at the /exec URL's "version". */
-var THE99_BUILD = 5;
+var THE99_BUILD = 6;
 window.THE99_BUILD = THE99_BUILD;
 
 var CFG = window.APP_CONFIG || {};
@@ -458,6 +458,80 @@ function normalizeYear(val) {
   return String(n);
 }
 
+/* ── BIRTHDAYS ──────────────────────────────────────────────────────────── */
+/* Birth_Date is filled in for about four fifths of the flock and was only ever
+   printed inside a collapsed card. A birthday is the most natural reason to
+   reach out, so it is surfaced as a prompt instead. */
+
+var BIRTHDAY_WINDOW = 7;        // today plus the next six days
+
+/** Reads yyyy-MM-dd (what the backend sends) without timezone drift. */
+function parseSheetDate(v) {
+  if (!v) return null;
+  var s = String(v).trim();
+  var m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (m) return { y: +m[1], m: +m[2], d: +m[3] };
+  // A plain `new Date('2006-05-12')` is parsed as UTC and can land a day early
+  // west of Greenwich, so only fall back for formats the regex missed.
+  var d = new Date(s);
+  if (isNaN(d.getTime())) return null;
+  return { y: d.getFullYear(), m: d.getMonth() + 1, d: d.getDate() };
+}
+
+/**
+ * The next occurrence of a birthday, or null if it is outside the window.
+ * Handles the turn of the year, and 29 February in a non-leap year (marked on
+ * the 28th, which is what most calendars do).
+ */
+function birthdayInfo(birthDate, windowDays) {
+  var p = parseSheetDate(birthDate);
+  if (!p || p.m < 1 || p.m > 12) return null;
+
+  var win = windowDays == null ? BIRTHDAY_WINDOW : windowDays;
+  var now = new Date();
+  var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  function occurrence(year) {
+    var d = new Date(year, p.m - 1, p.d);
+    // 29 Feb in a common year rolls into March; pull it back to the 28th.
+    if (d.getMonth() !== p.m - 1) d = new Date(year, p.m, 0);
+    return d;
+  }
+
+  var next = occurrence(today.getFullYear());
+  if (next < today) next = occurrence(today.getFullYear() + 1);
+
+  var daysAway = Math.round((next - today) / 86400000);
+  if (daysAway < 0 || daysAway >= win) return null;
+
+  // Only claim an age when the birth year is plausible.
+  var turning = (p.y > 1900 && p.y < next.getFullYear()) ? next.getFullYear() - p.y : null;
+
+  var label;
+  if (daysAway === 0) label = 'Today';
+  else if (daysAway === 1) label = 'Tomorrow';
+  else label = next.toLocaleDateString(undefined, { weekday: 'long' });
+
+  return { daysAway: daysAway, date: next, turning: turning, label: label,
+           shortLabel: daysAway === 0 ? 'Today'
+                     : daysAway === 1 ? 'Tmrw'
+                     : next.toLocaleDateString(undefined, { weekday: 'short' }) };
+}
+
+/** Everyone in the list with a birthday in the window, soonest first. */
+function upcomingBirthdays(youths, windowDays) {
+  var out = [];
+  (youths || []).forEach(function (y) {
+    var b = birthdayInfo(y.Birth_Date, windowDays);
+    if (b) out.push({ youth: y, birthday: b });
+  });
+  out.sort(function (a, b) {
+    return a.birthday.daysAway - b.birthday.daysAway ||
+           String(a.youth.Full_Name).localeCompare(String(b.youth.Full_Name));
+  });
+  return out;
+}
+
 function gpsUrl(val) {
   var v = String(val || '').trim();
   if (!v) return null;
@@ -512,11 +586,29 @@ function matchesQuery(youth, q) {
 
 /* ── PWA ────────────────────────────────────────────────────────────────── */
 
-if ('serviceWorker' in navigator) {
+/* The service worker serves assets cache-first, which is right in production
+   and maddening while editing: you change a file, reload, and see the old one.
+   So it stays off on localhost unless you ask for it with ?sw=1 — which you
+   want when testing installability itself, and not otherwise. */
+(function () {
+  if (!('serviceWorker' in navigator)) return;
+
+  var local = (window.APP_CONFIG || {}).isLocal;
+  var wanted = !local || /[?&]sw=1\b/.test(location.search);
+
+  if (!wanted) {
+    // Clear anything a previous ?sw=1 run left behind, so the next plain
+    // reload is genuinely serving the files on disk.
+    navigator.serviceWorker.getRegistrations().then(function (rs) {
+      rs.forEach(function (r) { r.unregister(); });
+    }).catch(function () { /* ignore */ });
+    return;
+  }
+
   window.addEventListener('load', function () {
     navigator.serviceWorker.register('sw.js').catch(function () { /* non-fatal */ });
   });
-}
+})();
 
 var deferredInstall = null;
 

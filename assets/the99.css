@@ -245,6 +245,69 @@ body {
   position: relative; z-index: 1;
 }
 
+/* ── BIRTHDAYS ──────────────────────────────────────────────────────────── */
+/* Deliberately light, so it reads as a celebration rather than another alert,
+   and does not stack two dark panels under the verse box. */
+
+.birthday-box {
+  margin: 16px 14px 0;
+  background: #FFFBF2;
+  border: 1.5px solid rgba(212,168,83,.45);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 15px 18px 6px;
+}
+.birthday-head {
+  font-size: calc(var(--base) * 0.75); font-weight: 700;
+  text-transform: uppercase; letter-spacing: 2px;
+  color: var(--amber);
+  display: flex; align-items: center; gap: 7px; margin-bottom: 4px;
+}
+.birthday-list { list-style: none; margin: 0; padding: 0; }
+.birthday-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 0; border-bottom: 1px solid rgba(200,149,90,.22);
+}
+.birthday-item:last-child { border-bottom: none; }
+
+.birthday-when {
+  flex-shrink: 0; min-width: 52px; text-align: center;
+  background: rgba(212,168,83,.16);
+  border: 1px solid rgba(212,168,83,.32);
+  border-radius: 10px; padding: 6px 7px;
+  font-size: calc(var(--base) * 0.625); font-weight: 700;
+  text-transform: uppercase; letter-spacing: .6px; color: var(--bark);
+}
+.birthday-item.is-today .birthday-when {
+  background: var(--gold); border-color: var(--gold); color: var(--earth);
+}
+
+/* Stack these: they are spans, so without this they flow inline and the age
+   runs on beside the name. */
+.birthday-who { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.birthday-name {
+  display: block;
+  font-family: 'Cormorant Garamond', serif;
+  font-size: calc(var(--base) * 1.185); font-weight: 600; color: var(--earth);
+  line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.birthday-age {
+  display: block;
+  font-size: calc(var(--base) * 0.6875); color: var(--clay);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.birthday-wish {
+  flex-shrink: 0; display: inline-flex; align-items: center; gap: 5px;
+  padding: 9px 13px; border-radius: 20px;
+  background: #25D366; color: #fff; text-decoration: none;
+  font-size: calc(var(--base) * 0.6875); font-weight: 700;
+}
+.birthday-wish:active { transform: scale(.96); }
+
+/* A quiet marker on the matching card further down the list. */
+.cake { font-size: calc(var(--base) * 0.9); margin-inline-start: 6px; }
+
 /* ── SUMMARY CHIPS ──────────────────────────────────────────────────────── */
 
 .summary { display: flex; gap: 10px; padding: 16px 14px 0; }

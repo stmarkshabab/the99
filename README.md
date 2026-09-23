@@ -191,6 +191,76 @@ are from your sign-in instead of from the link.
   — the sheet is re-checked on every request, not just at sign-in, and that
   table is cached for 20 seconds.
 
+## Previewing changes before they go live
+
+Every push reaches 27 servants immediately, so check things locally first.
+
+```bash
+./preview.sh
+```
+
+That serves this folder at <http://localhost:8000> and opens it. Edit a file,
+reload, see it. Stop with Ctrl+C.
+
+Three things make this work:
+
+- **`http://localhost:8000` is an authorized JavaScript origin** on the OAuth
+  client, so Google sign-in works locally. If you use a different port, add
+  that origin too or sign-in will refuse to load.
+- **`config.js` detects localhost** and uses its `LOCAL` block, so a preview can
+  point somewhere different from the live site.
+- **The service worker is skipped on localhost.** It serves assets cache-first,
+  which in production is what makes the app quick and while editing means you
+  reload and see yesterday's file. To test installability itself, add `?sw=1`
+  to the URL and it registers as normal.
+
+### Testing writes safely
+
+Out of the box the preview talks to the **real** backend, so logging a
+reach-out while testing writes a real row to the ministry's sheet. Fine for
+checking layout; not fine for trying things out. The console prints a warning
+whenever this is the case.
+
+To separate them:
+
+1. Open the spreadsheet → **File → Make a copy**. Call it something like
+   *Youth 2026 (TEST)*.
+2. In the copy: **Extensions → Apps Script**, paste `code.gs`, and change
+   `SPREADSHEET_ID` at the top to the copy's id.
+3. Set the same `GOOGLE_CLIENT_ID` script property, run `setup`, and deploy it
+   as a web app exactly as you did the first time.
+4. Put that second `/exec` URL into `LOCAL.API_URL` in `config.js`.
+
+Now `./preview.sh` runs against test data and the live site is untouched. The
+warning in the console disappears once the two URLs differ.
+
+### When you are ready to publish
+
+```bash
+git add -A && git commit -m "what changed" && git push
+```
+
+Then remember: **bump `VERSION` in `sw.js` whenever a file in `assets/` changed**,
+or phones keep the old copy. And give GitHub Pages a few minutes — its CDN
+caches for 10 minutes, so the site can lag behind the repo.
+
+## Birthdays
+
+`Birth_Date` is filled in for about 79% of the flock — roughly six birthdays a
+week across the whole ministry. The home page shows any that fall today or in
+the next six days, above the flock, with a WhatsApp button that opens a chat
+with a greeting already written.
+
+- The greeting agrees with `Gender` (`وانتي طيبة` / `وانت طيب`), and falls back
+  to a form needing no agreement when the column is blank. It only pre-fills
+  WhatsApp's box — the servant can edit or delete it before sending.
+- Youths with a birthday in the window also carry a 🎂 on their card.
+- 29 February is marked on the 28th in common years.
+- The panel hides itself entirely when nobody has a birthday that week, so it
+  never becomes furniture.
+
+To change the window, edit `BIRTHDAY_WINDOW` in `assets/the99.js`.
+
 ## Speed
 
 Apps Script takes a second or two to answer, and reading a sheet is the slowest

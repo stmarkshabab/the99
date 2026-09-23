@@ -53,6 +53,11 @@
     <div class="verse-ref"  id="verseRef"></div>
   </div>
 
+  <div class="birthday-box" id="birthdayBox" hidden>
+    <div class="birthday-head">🎂 <span id="birthdayHead">Birthdays this week</span></div>
+    <ul class="birthday-list" id="birthdayList"></ul>
+  </div>
+
   <div class="summary" id="summary"></div>
 
   <div class="lost-banner" id="lostBanner" hidden>
@@ -114,6 +119,7 @@
       function (data) {
         FLOCK = data.youths || [];
         document.getElementById('filterBar').hidden = FLOCK.length === 0;
+        renderBirthdays();
         renderSummary();
         renderCards();
       },
@@ -121,6 +127,52 @@
         document.getElementById('cards').innerHTML =
           '<div class="empty-state"><div class="icon">⚠️</div><p>' + escHtml(err.message) + '</p></div>';
       });
+  }
+
+  /* ── BIRTHDAYS ─────────────────────────────────────────────────────── */
+
+  var BIRTHDAYS = [];      // ids with a birthday in the window, for the card badge
+
+  function renderBirthdays() {
+    var soon = upcomingBirthdays(FLOCK);
+    var box = document.getElementById('birthdayBox');
+
+    BIRTHDAYS = soon.map(function (b) { return b.youth.Youth_ID; });
+
+    if (!soon.length) { box.hidden = true; return; }
+    box.hidden = false;
+
+    var todayCount = soon.filter(function (b) { return b.birthday.daysAway === 0; }).length;
+    document.getElementById('birthdayHead').textContent = todayCount
+      ? (todayCount === 1 ? 'A birthday today' : todayCount + ' birthdays today')
+      : 'Birthdays this week';
+
+    document.getElementById('birthdayList').innerHTML = soon.map(function (b) {
+      var y = b.youth, info = b.birthday;
+      var wa = cleanPhone(y.Mobile);
+      // Arabic agrees with gender; the masculine form for a young woman reads
+      // as carelessness, so pick the right one from the sheet. Unknown gender
+      // falls back to a greeting that needs no agreement at all.
+      var first = String(y.Full_Name || '').split(/\s+/)[0];
+      var g = String(y.Gender || '').trim().toLowerCase();
+      var greeting = encodeURIComponent(
+        g === 'female' ? 'كل سنة وانتي طيبة يا ' + first + ' 🎉'
+      : g === 'male'   ? 'كل سنة وانت طيب يا '  + first + ' 🎉'
+      :                  'كل سنة وانت طيب / وانتي طيبة يا ' + first + ' 🎉');
+
+      return '<li class="birthday-item' + (info.daysAway === 0 ? ' is-today' : '') + '">' +
+        '<span class="birthday-when">' + escHtml(info.shortLabel) + '</span>' +
+        '<span class="birthday-who">' +
+          '<span class="birthday-name" dir="auto">' + escHtml(y.Full_Name || '') + '</span>' +
+          '<span class="birthday-age">' +
+            (info.turning ? 'turning ' + info.turning : 'birthday') +
+            (y.Year ? ' · Year ' + escHtml(y.Year) : '') +
+          '</span>' +
+        '</span>' +
+        (wa ? '<a class="birthday-wish" href="https://wa.me/' + wa + '?text=' + greeting +
+              '" target="_blank" rel="noopener">💬 Wish</a>' : '') +
+      '</li>';
+    }).join('');
   }
 
   /* ── SUMMARY CHIPS (also the state filter) ─────────────────────────── */
@@ -289,7 +341,9 @@
       '<div class="card ' + highlightClass + '">' +
         '<div class="card-header" onclick="toggleCard(this)">' +
           '<div class="top-row">' +
-            '<div class="name" dir="auto">' + escHtml(youth.Full_Name || '') + '</div>' +
+            '<div class="name" dir="auto">' + escHtml(youth.Full_Name || '') +
+              (BIRTHDAYS.indexOf(youth.Youth_ID) !== -1
+                ? '<span class="cake" title="Birthday this week">🎂</span>' : '') + '</div>' +
             '<div class="badge ' + badgeClass + '">' + escHtml(youth.Status || 'Active') + '</div>' +
           '</div>' +
           '<div class="bottom-row">' +
