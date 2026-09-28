@@ -112,6 +112,30 @@ function setup() {
   var leaders = PropertiesService.getScriptProperties().getProperty('LEADER_EMAILS');
   note('LEADER_EMAILS', leaders || '(none — using the Servants sheet Role column)');
 
+  // This property outranks the sheet, which is easy to forget once it is set.
+  if (leaders) {
+    var forced = leaders.split(',').map(function (x) { return x.trim().toLowerCase(); })
+                        .filter(String);
+    try {
+      var ts = table(SHEETS.servants);
+      var mCol = pick(ts.index, ['Mail', 'Email', 'E-mail']);
+      var rCol = pick(ts.index, ['Role', 'Access', 'Level']);
+      if (mCol != null && rCol != null) {
+        for (var q = 0; q < ts.rows.length; q++) {
+          var em = String(ts.rows[q][mCol] || '').trim().toLowerCase();
+          if (!em || forced.indexOf(em) === -1) continue;
+          var rt = String(ts.rows[q][rCol] || '').trim();
+          if (rt && rt.toLowerCase().indexOf('class') !== -1) {
+            bad('LEADER_EMAILS overrides the sheet',
+                em + ' is "' + rt + '" in the sheet but LEADER_EMAILS forces full ' +
+                'leader access. Remove the address from LEADER_EMAILS for the ' +
+                'sheet Role to apply.');
+          }
+        }
+      }
+    } catch (e) { /* the Servants check below reports sheet problems */ }
+  }
+
   // 3b. Session signing key — created here so no live request has to make it.
   try {
     var existed = !!PropertiesService.getScriptProperties().getProperty('SESSION_SECRET');

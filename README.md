@@ -103,7 +103,13 @@ isn't on it cannot get in.
    | Property | Value |
    |---|---|
    | `GOOGLE_CLIENT_ID` | the Client ID from step 2 |
-   | `LEADER_EMAILS` | *(optional)* extra leader emails, comma-separated |
+   | `LEADER_EMAILS` | *(optional)* emails that are always full leaders |
+
+   > **`LEADER_EMAILS` outranks the sheet.** It exists so you cannot lock
+   > yourself out by mistyping a `Role`, so an address listed there is a full
+   > ministry leader whatever the `Servants` sheet says — including `Class
+   > Leader`. To let the sheet decide, remove the address from this property.
+   > `setup` reports the clash if one exists.
 
 4. **Show the manifest so the scopes are explicit.** Project Settings → tick
    *Show "appsscript.json" manifest file in editor*, then replace that file with
