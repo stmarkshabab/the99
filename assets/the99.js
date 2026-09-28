@@ -8,7 +8,7 @@
 
 /* Build marker. Must match the backend's apiVersion (code.gs). Check in the
    console with THE99_BUILD; the backend's is at the /exec URL's "version". */
-var THE99_BUILD = 6;
+var THE99_BUILD = 8;
 window.THE99_BUILD = THE99_BUILD;
 
 var CFG = window.APP_CONFIG || {};
@@ -282,16 +282,29 @@ function clearApiCache() {
   } catch (e) { /* ignore */ }
 }
 
-/** bootstrap() is wanted by every page, so keep it for the session. */
+/* bootstrap carries who you are and whether you are a leader. It used to be
+   cached for the whole browser session with no expiry, so a Role removed from
+   the Servants sheet kept its navigation until the tab was closed. It is now
+   short-lived, and every page revalidates it in the background. */
+var BOOT_TTL = 5 * 60 * 1000;
+
+function readBoot() {
+  try {
+    var c = JSON.parse(sessionStorage.getItem(BOOT_KEY));
+    return (c && c.data) ? c : null;
+  } catch (e) { return null; }
+}
+
+function writeBoot(data) {
+  try {
+    sessionStorage.setItem(BOOT_KEY, JSON.stringify({ at: Date.now(), data: data }));
+  } catch (e) { /* private mode */ }
+}
+
 function getBootstrap(force) {
-  if (!force) {
-    var cached = sessionStorage.getItem(BOOT_KEY);
-    if (cached) { try { return Promise.resolve(JSON.parse(cached)); } catch (e) { /* refetch */ } }
-  }
-  return api('bootstrap').then(function (data) {
-    try { sessionStorage.setItem(BOOT_KEY, JSON.stringify(data)); } catch (e) { /* ignore */ }
-    return data;
-  });
+  var c = readBoot();
+  if (!force && c && (Date.now() - c.at) < BOOT_TTL) return Promise.resolve(c.data);
+  return api('bootstrap').then(function (data) { writeBoot(data); return data; });
 }
 
 /* ── THE GATE ───────────────────────────────────────────────────────────── */
@@ -351,13 +364,19 @@ function requireServant(opts) {
             'to sign in again on every page.\n\n' +
             'In the Apps Script editor: paste the current code.gs, then\n' +
             'Deploy > Manage deployments > edit > Version: New version > Deploy.' +
-            (boot.apiVersion ? '\n\nBackend reports version ' + boot.apiVersion + ', expected 4.'
-                             : '\n\nBackend reports no version, expected 4.'));
+            (boot.apiVersion ? '\n\nBackend reports version ' + boot.apiVersion + ', expected 5.'
+                             : '\n\nBackend reports no version, expected 5.'));
           return;
         }
 
-        if (opts.leaderOnly && !boot.user.isLeader) {
-          showGate('This page is for leaders only.\n\nYou are signed in as ' +
+        var myRole = boot.user.role || (boot.user.isLeader ? 'leader' : 'servant');
+        if (opts.leaderOnly && myRole !== 'leader') {
+          showGate('This page is for the ministry leader only.\n\nYou are signed in as ' +
+                   boot.user.email + '.');
+          return;
+        }
+        if (opts.classOnly && myRole !== 'class' && myRole !== 'leader') {
+          showGate('You do not lead a class.\n\nYou are signed in as ' +
                    boot.user.email + '.');
           return;
         }
@@ -365,6 +384,7 @@ function requireServant(opts) {
         if (app) app.hidden = false;
         mountChrome(boot);
         resolve({ profile: boot.user, boot: boot });
+        revalidateRole(boot, opts);
       }).catch(function (err) {
         Session.clear();
         // Without this, auto_select signs straight back in and the failure loops.
@@ -375,6 +395,30 @@ function requireServant(opts) {
 
     if (!Session.valid()) showGate(null);
   });
+}
+
+/**
+ * Re-checks the caller's role against the sheet after the page has drawn, and
+ * reacts if it changed — so losing (or gaining) Leader takes effect on the next
+ * page load rather than the next browser session.
+ *
+ * The server has always enforced this itself; this only keeps the navigation
+ * honest about what will actually work.
+ */
+function revalidateRole(boot, opts) {
+  api('bootstrap').then(function (fresh) {
+    writeBoot(fresh);
+    var was = boot.user.role || (boot.user.isLeader ? 'leader' : 'servant');
+    var now = fresh.user.role || (fresh.user.isLeader ? 'leader' : 'servant');
+    if (was === now) return;
+
+    if ((opts.leaderOnly && now !== 'leader') ||
+        (opts.classOnly && now !== 'class' && now !== 'leader')) {
+      location.reload();        // the fresh role is cached, so this lands on the gate
+      return;
+    }
+    mountChrome(fresh);         // otherwise just correct the navigation
+  }).catch(function () { /* offline or transient — leave the page as it is */ });
 }
 
 /** Fills the header tools, the nav, and marks the current page. */
@@ -390,20 +434,31 @@ function mountChrome(boot) {
     ib.onclick = doInstall;
   }
 
+  /* Three tiers:
+       servant       My Flock · Dashboard
+       class leader  My Flock · My Class · Dashboard
+       leader        My Flock · Shepherds · Dashboard          */
   var nav = document.getElementById('nav');
   if (nav) {
-    if (!boot.user.isLeader) { nav.hidden = true; }
-    else {
-      nav.hidden = false;
-      nav.innerHTML =
-        '<a href="index.html">My Flock</a>' +
-        '<a href="shepherds.html">Shepherds</a>' +
-        '<a href="dashboard.html">Dashboard</a>';
-      var here = location.pathname.split('/').pop() || 'index.html';
-      var links = nav.querySelectorAll('a');
-      for (var i = 0; i < links.length; i++) {
-        if (links[i].getAttribute('href') === here) links[i].setAttribute('aria-current', 'page');
-      }
+    var role = boot.user.role || (boot.user.isLeader ? 'leader' : 'servant');
+    var links = ['<a href="index.html">My Flock</a>'];
+
+    if (role === 'class') links.push('<a href="index.html?view=class">My Class</a>');
+    if (role === 'leader') links.push('<a href="shepherds.html">Shepherds</a>');
+    links.push('<a href="dashboard.html">Dashboard</a>');
+
+    nav.hidden = false;
+    nav.innerHTML = links.join('');
+
+    var here = location.pathname.split('/').pop() || 'index.html';
+    var classView = /[?&]view=class\b/.test(location.search);
+    var want = here === 'index.html'
+      ? (classView ? 'index.html?view=class' : 'index.html')
+      : here;
+
+    var els = nav.querySelectorAll('a');
+    for (var i = 0; i < els.length; i++) {
+      if (els[i].getAttribute('href') === want) els[i].setAttribute('aria-current', 'page');
     }
   }
 }
@@ -451,10 +506,12 @@ function isSuccessful(f) {
   return v === 'true' || v === 'yes' || v === '1';
 }
 
+/* Years 4 and 5 are run as one batch. Year 6 is NOT — those youths are still
+   awaiting a decision on graduating, and folding them in overstated the batch. */
 function normalizeYear(val) {
   var n = parseInt(parseFloat(String(val || '').trim()));
   if (isNaN(n)) return '?';
-  if (n >= 4) return '4-5';
+  if (n === 4 || n === 5) return '4-5';
   return String(n);
 }
 

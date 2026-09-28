@@ -57,7 +57,7 @@
 <script>
 (function () {
   requireServant({ leaderOnly: true }).then(function () {
-    apiCached('dashboard', 'dashboard', {}, buildPage, function (err) {
+    apiCached('shepherds', 'shepherds', {}, buildPage, function (err) {
       document.getElementById('main').innerHTML =
         '<div class="empty-state"><div class="icon">⚠️</div><p>' + escHtml(err.message) + '</p></div>';
     });
@@ -65,17 +65,16 @@
 
   function buildPage(data) {
     var main = document.getElementById('main');
-    var youth     = data.youths   || [];
-    var followups = (data.followUps || []).filter(isSuccessful);
+    var servants = data.servants || [];
 
     main.innerHTML = '';
 
     /* ── OVERALL SUMMARY ── */
-    var totalOk = 0, totalWarn = 0, totalLate = 0;
-    youth.forEach(function (y) {
-      var s = flockState(daysSince(y.Latest_Followup));
-      if (s === 'late') totalLate++; else if (s === 'warn') totalWarn++; else totalOk++;
+    var totalOk = 0, totalWarn = 0, totalLate = 0, totalLogs = 0;
+    servants.forEach(function (d) {
+      totalOk += d.ok; totalWarn += d.warn; totalLate += d.late; totalLogs += d.logs;
     });
+    var youthCount = totalOk + totalWarn + totalLate;
 
     appendSection(main, 'Overall Flock');
     var g1 = el('div', 'stat-grid three');
@@ -85,33 +84,9 @@
     main.appendChild(g1);
 
     var g2 = el('div', 'stat-grid');
-    g2.innerHTML = statCard('dark', youth.length,     'Total Shabab') +
-                   statCard('dark', followups.length, 'Reach-Outs');
+    g2.innerHTML = statCard('dark', youthCount, 'Total Shabab') +
+                   statCard('dark', totalLogs,  'Reach-Outs');
     main.appendChild(g2);
-
-    /* ── BUILD SERVANT MAP ── */
-    var sMap = {};
-    function slot(name) {
-      if (!sMap[name]) sMap[name] = { ok: 0, warn: 0, late: 0, logs: 0 };
-      return sMap[name];
-    }
-    youth.forEach(function (y) {
-      var s = slot(y.Servant_Name || 'Unassigned');
-      var st = flockState(daysSince(y.Latest_Followup));
-      if (st === 'late') s.late++; else if (st === 'warn') s.warn++; else s.ok++;
-    });
-    followups.forEach(function (f) {
-      slot(f.Servant_Name || 'Unassigned').logs++;
-    });
-
-    /* sort: highest % in fold first */
-    var servants = Object.keys(sMap).sort(function (a, b) {
-      var ta = sMap[a].ok + sMap[a].warn + sMap[a].late;
-      var tb = sMap[b].ok + sMap[b].warn + sMap[b].late;
-      var pa = ta > 0 ? sMap[a].ok / ta : 0;
-      var pb = tb > 0 ? sMap[b].ok / tb : 0;
-      return pb - pa;
-    });
 
     /* ── SEARCH + CARDS ── */
     appendSection(main, 'Shepherds — tap to open');
@@ -126,8 +101,8 @@
     listWrap.id = 'servantList';
     listWrap.style.cssText = 'display:flex;flex-direction:column;gap:10px;margin-top:4px';
 
-    servants.forEach(function (s) {
-      var d = sMap[s];
+    servants.forEach(function (d) {
+      var s = d.servant;
       var total = d.ok + d.warn + d.late;
       var pct = total > 0 ? Math.round(d.ok / total * 100) : 0;
 

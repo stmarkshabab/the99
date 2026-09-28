@@ -46,10 +46,26 @@ oldFiles/           Your original implementation, untouched, for reference
 
 Open the spreadsheet (`1v4CpILHr2ZuN2SeCfBh-HS6sCSDTRCsFJoJ1Y7X1p50`).
 
-**On the `Servants` tab**, add a column with the header **`Role`**. Type
-`Leader` in it for anyone who should see the dashboard, the shepherds list, and
-every flock. Leave it blank for ordinary servants — they get their own flock
-only. You can change this any time; no redeploy needed.
+**On the `Servants` tab**, add two columns: **`Role`** and **`Scope`**.
+
+| Role | Scope | What they get |
+|---|---|---|
+| *(blank)* | — | Their own flock, and the dashboard |
+| `Class Leader` | `Female 3` | The above, plus **read-only** view of every female in year 3 |
+| `Leader` | — | Everything: every flock, the Shepherds ranking, the dashboard |
+
+**Years 4 and 5 are one batch** — a Scope of `Male 4` or `Male 5` both cover
+years 4 *and* 5. Year 6 is deliberately left out of that batching while those
+youths await a decision on graduating, so no class sweeps them up.
+
+`Scope` accepts `Female 3`, `Male 5`, `Female 1,2`, and the Arabic `بنات 3`.
+A `Class Leader` whose `Scope` cannot be read falls back to an ordinary servant.
+
+Class leaders **look but do not touch**: logging reach-outs and editing notes
+stay with each youth's own servant, or the ministry leader.
+
+You can change any of this in the sheet at any time; no redeploy needed, and it
+takes effect within about 20 seconds.
 
 Make sure every servant's `Mail` cell holds the Google account they will
 actually sign in with. **That column is the access list** — an account that

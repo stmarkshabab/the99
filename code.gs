@@ -169,7 +169,7 @@ function setup() {
 
 function doGet(e) {
   if (!e || !e.parameter || !e.parameter.action) {
-    return json({ ok: true, service: 'the99-api', version: 4 });
+    return json({ ok: true, service: 'the99-api', version: 5 });
   }
   return handle(e.parameter);
 }
@@ -197,6 +197,7 @@ function handle(req) {
       case 'logFollowup': data = logFollowUp(user, payload); break;
       case 'updateNotes': data = updateNotes(user, payload); break;
       case 'dashboard':   data = getDashboardData(user); break;
+      case 'shepherds':   data = getShepherds(user); break;
       default:
         throw httpError(400, 'Unknown action: ' + req.action);
     }
@@ -256,7 +257,9 @@ function authenticate(req) {
       name: servant.name,
       year: servant.year,
       mobile: servant.mobile,
-      isLeader: servant.isLeader,
+      role: servant.role,            // 'leader' | 'class' | 'servant'
+      scope: servant.scope,          // { gender, years[] } for a class leader
+      isLeader: servant.isLeader,    // true only for the ministry leader
       picture: ''
     },
     session: session
@@ -386,13 +389,28 @@ function findServant(email) {
     var cell = String(t.rows[r][iMail] || '').trim().toLowerCase();
     if (!cell || cell !== email) continue;
 
-    var role = iRole == null ? '' : String(t.rows[r][iRole] || '').trim().toLowerCase();
+    var roleText = iRole == null ? '' : String(t.rows[r][iRole] || '').trim().toLowerCase();
+    var iScope = pick(t.index, ['Scope', 'Class', 'Class_Scope']);
+    var scopeText = iScope == null ? '' : String(t.rows[r][iScope] || '').trim();
+
+    // "Class Leader" must be tested before the looser "leader" check.
+    var role;
+    if (extraLeaders.indexOf(email) !== -1) role = 'leader';
+    else if (roleText.indexOf('class') !== -1) role = 'class';
+    else if (roleText.indexOf('leader') !== -1 || roleText.indexOf('admin') !== -1) role = 'leader';
+    else role = 'servant';
+
+    var scope = role === 'class' ? parseScope(scopeText) : null;
+    // A class leader with nothing usable in Scope can only see their own flock.
+    if (role === 'class' && !scope) role = 'servant';
+
     return {
       name:   String(t.rows[r][iName] || '').trim(),
       year:   iName == null ? '' : normYear(t.rows[r][t.index.Year]),
       mobile: t.index.Mobile == null ? '' : String(t.rows[r][t.index.Mobile] || ''),
-      isLeader: role.indexOf('leader') !== -1 || role.indexOf('admin') !== -1 ||
-                extraLeaders.indexOf(email) !== -1
+      role: role,
+      scope: scope,
+      isLeader: role === 'leader'          // kept: the write checks still read this
     };
   }
   return null;
@@ -404,18 +422,67 @@ function requireLeader(user) {
   }
 }
 
+/**
+ * Years 4 and 5 are run as one batch, so a class scope naming either covers
+ * both. Year 6 is left out of that batching on purpose — those youths are
+ * still awaiting a decision on graduating, so nobody's class sweeps them up.
+ */
+function batchYears(year) {
+  var y = String(year).trim();
+  return (y === '4' || y === '5') ? ['4', '5'] : [y];
+}
+
+/**
+ * Reads a Scope cell such as "Female 3", "Male 5", "Female 1,2".
+ * Returns { gender: 'Female'|'Male'|'', years: ['3'] } or null when unusable.
+ */
+function parseScope(text) {
+  var s = String(text || '').trim();
+  if (!s) return null;
+
+  var gender = '';
+  if (/female|بنات|فتيات/i.test(s)) gender = 'Female';
+  else if (/male|بنين|شباب/i.test(s)) gender = 'Male';
+
+  var years = {};
+  (s.match(/\d+/g) || []).forEach(function (n) {
+    batchYears(String(parseInt(n, 10))).forEach(function (y) { years[y] = true; });
+  });
+
+  var list = Object.keys(years).sort();
+  if (!gender && !list.length) return null;
+  return { gender: gender, years: list };
+}
+
+/** Is this youth inside the caller's class? */
+function inScope(scope, gender, year) {
+  if (!scope) return false;
+  if (scope.gender && String(gender).trim() !== scope.gender) return false;
+  if (scope.years.length && scope.years.indexOf(normYear(year)) === -1) return false;
+  return true;
+}
+
+function requireMainLeader(user) {
+  if (user.role !== 'leader') {
+    throw httpError(403, 'This page is for the ministry leader only.');
+  }
+}
+
 // ===========================================================================
 // Actions
 // ===========================================================================
 
 function bootstrap(user) {
   return {
-    apiVersion: 4,
+    apiVersion: 5,
     user: {
       name: user.name,
       email: user.email,
       year: user.year,
+      role: user.role,
+      scope: user.scope,
       isLeader: user.isLeader,
+      canViewClass: user.role === 'class' || user.role === 'leader',
       picture: user.picture
     },
     followupTypes: FOLLOWUP_TYPES,
@@ -428,23 +495,67 @@ function bootstrap(user) {
  * One servant's flock. A servant may only read their own; a leader may pass
  * ?servant= to read anyone's. This is the check the old ?servant= URL lacked.
  */
+/**
+ * The youths a caller may see.
+ *
+ *   view 'mine'    their own flock                        (everyone)
+ *   view 'class'   every youth in their class, read-only  (class leader, leader)
+ *   view 'servant' another servant's flock                (leader only)
+ */
 function getFlock(user, payload) {
+  var view = String(payload.view || '').trim();
   var who = String(payload.servant || '').trim();
-  if (!who || !user.isLeader) who = user.name;
-  if (who !== user.name && !user.isLeader) requireLeader(user);
+
+  // Fall back to the old behaviour when no view is named.
+  if (!view) view = (who && who !== user.name) ? 'servant' : 'mine';
 
   var t = cachedTable(SHEETS.youths);
   var lastLog = lastFollowupByYouth();
-  var wanted = who.toLowerCase();
   var out = [];
 
+  if (view === 'class') {
+    if (user.role !== 'class' && user.role !== 'leader') {
+      throw httpError(403, 'You do not lead a class.');
+    }
+    var scope = user.scope;
+    if (user.role === 'leader' && !scope) {
+      throw httpError(400, 'No class scope set.');
+    }
+    for (var c = 0; c < t.rows.length; c++) {
+      var row = t.rows[c];
+      if (!String(row[t.index.Youth_ID] || '').trim()) continue;
+      if (!inScope(scope, row[t.index.Gender], row[t.index.Year])) continue;
+      out.push(youthObject(t, row, lastLog));
+    }
+    return {
+      view: 'class',
+      scope: scope,
+      label: (scope.gender || 'All') + ' · year ' + scope.years.join(' & '),
+      youths: out,
+      canWrite: false           // class leaders look, they do not edit
+    };
+  }
+
+  if (view === 'servant') {
+    requireMainLeader(user);
+  } else {
+    who = user.name;
+  }
+
+  var wanted = who.toLowerCase();
   for (var r = 0; r < t.rows.length; r++) {
     var owner = String(t.rows[r][t.index.Servant_Name] || '').trim().toLowerCase();
     if (owner !== wanted) continue;
     out.push(youthObject(t, t.rows[r], lastLog));
   }
 
-  return { servant: who, youths: out, isOwnFlock: who === user.name };
+  return {
+    view: view,
+    servant: who,
+    youths: out,
+    isOwnFlock: who === user.name,
+    canWrite: who === user.name || user.role === 'leader'
+  };
 }
 
 /** Appends one reach-out. Latest_Followup recalculates itself in the sheet. */
@@ -460,8 +571,9 @@ function logFollowUp(user, payload) {
 
   var youth = findYouth(youthId);
   if (!youth) throw httpError(404, 'No youth with id ' + youthId);
-  // The old app let anyone edit the URL and log against another flock.
-  if (!user.isLeader && youth.servantName.toLowerCase() !== user.name.toLowerCase()) {
+  // Own flock, or the ministry leader. A class leader can see their class but
+  // not change it, so being in scope is deliberately not enough here.
+  if (user.role !== 'leader' && youth.servantName.toLowerCase() !== user.name.toLowerCase()) {
     throw httpError(403, youth.fullName + ' is not in your flock.');
   }
 
@@ -517,7 +629,7 @@ function updateNotes(user, payload) {
        put the note on the wrong youth. */
     var youth = findYouth(youthId, true);
     if (!youth) throw httpError(404, "Youth_ID '" + youthId + "' not found in sheet.");
-    if (!user.isLeader && youth.servantName.toLowerCase() !== user.name.toLowerCase()) {
+    if (user.role !== 'leader' && youth.servantName.toLowerCase() !== user.name.toLowerCase()) {
       throw httpError(403, youth.fullName + ' is not in your flock.');
     }
 
@@ -533,15 +645,20 @@ function updateNotes(user, payload) {
 }
 
 /**
- * Everything the dashboard and shepherds pages need — and nothing else.
+ * The dashboard, for everyone.
  *
- * These two pages only ever group and count; they never show a phone number or
- * an address. Sending whole rows meant ~380KB per load, most of it contact
- * details going straight to the bin. Projecting to the fields actually read
- * cuts that by about 70% and keeps the data off the wire entirely.
+ * The figures themselves are ministry-wide and carry no contact details, so
+ * every servant may see them. What varies by role is the per-servant
+ * breakdown: only the ministry leader receives Servant_Name on each row, so
+ * nobody else can rebuild the shepherds ranking from this payload.
+ *
+ * Each youth is flagged `mine` (in the caller's own flock) and `inClass` (in
+ * the caller's class), which is what lets a servant see their own numbers
+ * beside the ministry's without being sent anyone else's.
  */
 function getDashboardData(user) {
-  requireLeader(user);
+  var full = user.role === 'leader';
+  var me = String(user.name || '').trim().toLowerCase();
 
   var t = cachedTable(SHEETS.youths);
   var lastLog = lastFollowupByYouth();
@@ -552,35 +669,133 @@ function getDashboardData(user) {
     var row = t.rows[r];
     var id = String(row[iId] || '').trim();
     if (!id) continue;
+
+    var owner = String(row[t.index.Servant_Name] || '').trim();
+    var gender = plain(row[t.index.Gender]);
+    var year = normYear(row[t.index.Year]);
     var lf = lastLog[id] || null;
-    youths.push({
-      Year: normYear(row[t.index.Year]),
-      Gender: plain(row[t.index.Gender]),
-      Servant_Name: plain(row[t.index.Servant_Name]),
+
+    var o = {
+      Year: year,
+      Gender: gender,
       Latest_Followup: lf
         ? Utilities.formatDate(lf, Session.getScriptTimeZone(), 'yyyy-MM-dd')
-        : null
-    });
+        : null,
+      mine: owner.toLowerCase() === me,
+      inClass: inScope(user.scope, gender, year)
+    };
+    if (full) o.Servant_Name = owner;
+    youths.push(o);
   }
 
   var tl = cachedTable(SHEETS.logs);
-  var LOG_FIELDS = ['Date', 'Year', 'Gender', 'Type', 'Successful?', 'Servant_Name'];
   var followUps = [];
+  var FIELDS = ['Date', 'Year', 'Gender', 'Type', 'Successful?'];
 
   for (var i = 0; i < tl.rows.length; i++) {
     var lrow = tl.rows[i];
     if (!String(lrow[tl.index.Youth_ID] || '').trim()) continue;
     var obj = {};
-    for (var f = 0; f < LOG_FIELDS.length; f++) {
-      var key = LOG_FIELDS[f];
-      var col = tl.index[key];
+    for (var f = 0; f < FIELDS.length; f++) {
+      var key = FIELDS[f], col = tl.index[key];
       obj[key] = col == null ? '' : plain(lrow[col]);
     }
     obj.Year = normYear(obj.Year);
+    var sn = String(lrow[tl.index.Servant_Name] || '').trim();
+    obj.mine = sn.toLowerCase() === me;
+    if (full) obj.Servant_Name = sn;
     followUps.push(obj);
   }
 
-  return { youths: youths, followUps: followUps };
+  return {
+    role: user.role,
+    scope: user.scope,
+    youths: youths,
+    followUps: followUps,
+    banner: faithfulShepherd(),      // a celebration, so everyone sees it
+    hasServantNames: full
+  };
+}
+
+/**
+ * The shepherd whose whole flock is in the fold, largest flock first — or,
+ * failing that, whoever is closest. Computed here so the dashboard can honour
+ * someone without every servant's figures being sent to every servant.
+ */
+function faithfulShepherd() {
+  var t = cachedTable(SHEETS.youths);
+  var lastLog = lastFollowupByYouth();
+  var now = Date.now();
+  var per = {};
+
+  for (var r = 0; r < t.rows.length; r++) {
+    var row = t.rows[r];
+    var id = String(row[t.index.Youth_ID] || '').trim();
+    if (!id) continue;
+    var name = String(row[t.index.Servant_Name] || '').trim();
+    if (!name) continue;
+
+    if (!per[name]) per[name] = { ok: 0, total: 0 };
+    per[name].total++;
+
+    var lf = lastLog[id];
+    if (lf && Math.floor((now - lf.getTime()) / 86400000) <= FOLD_DAYS) per[name].ok++;
+  }
+
+  var MIN_FLOCK = 3;
+  var best = null, perfect = 0;
+  Object.keys(per).forEach(function (n) {
+    var v = per[n];
+    if (v.total < MIN_FLOCK) return;
+    var pct = Math.round(v.ok / v.total * 100);
+    if (pct === 100) perfect++;
+    if (!best || pct > best.pct || (pct === best.pct && v.total > best.total)) {
+      best = { name: n, pct: pct, ok: v.ok, total: v.total };
+    }
+  });
+
+  if (!best) return null;
+  best.alsoPerfect = best.pct === 100 ? Math.max(0, perfect - 1) : 0;
+  return best;
+}
+
+/** The shepherds ranking. The ministry leader only. */
+function getShepherds(user) {
+  requireMainLeader(user);
+
+  var t = cachedTable(SHEETS.youths);
+  var lastLog = lastFollowupByYouth();
+  var now = Date.now();
+  var per = {};
+
+  for (var r = 0; r < t.rows.length; r++) {
+    var row = t.rows[r];
+    var id = String(row[t.index.Youth_ID] || '').trim();
+    if (!id) continue;
+    var name = String(row[t.index.Servant_Name] || '').trim() || 'Unassigned';
+    if (!per[name]) per[name] = { servant: name, ok: 0, warn: 0, late: 0, logs: 0 };
+
+    var lf = lastLog[id];
+    var days = lf ? Math.floor((now - lf.getTime()) / 86400000) : null;
+    if (days === null || days > WANDER_DAYS) per[name].late++;
+    else if (days > FOLD_DAYS) per[name].warn++;
+    else per[name].ok++;
+  }
+
+  var tl = cachedTable(SHEETS.logs);
+  for (var i = 0; i < tl.rows.length; i++) {
+    var lrow = tl.rows[i];
+    if (String(lrow[tl.index['Successful?']] || '').trim().toLowerCase() !== 'yes') continue;
+    var sn = String(lrow[tl.index.Servant_Name] || '').trim() || 'Unassigned';
+    if (per[sn]) per[sn].logs++;
+  }
+
+  var list = Object.keys(per).map(function (k) { return per[k]; });
+  list.sort(function (a, b) {
+    var ta = a.ok + a.warn + a.late, tb = b.ok + b.warn + b.late;
+    return (tb ? b.ok / tb : 0) - (ta ? a.ok / ta : 0);
+  });
+  return { servants: list };
 }
 
 // ===========================================================================

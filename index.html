@@ -105,14 +105,44 @@
 
   setRandomVerse();
 
-  requireServant().then(function (ctx) {
-    // A leader may open another shepherd's flock: index.html?servant=Name
-    var asked = new URLSearchParams(location.search).get('servant');
-    SERVANT_NAME = (ctx.boot.user.isLeader && asked) ? asked.trim() : ctx.boot.user.name;
-    CAN_EDIT = ctx.boot.user.isLeader || SERVANT_NAME === ctx.boot.user.name;
+  var Q = new URLSearchParams(location.search);
+  var CLASS_VIEW = Q.get('view') === 'class';
+
+  requireServant(CLASS_VIEW ? { classOnly: true } : {}).then(function (ctx) {
+    var role = ctx.boot.user.role || (ctx.boot.user.isLeader ? 'leader' : 'servant');
+
+    if (CLASS_VIEW) {
+      // A class leader looking at their whole class — read only.
+      SERVANT_NAME = ctx.boot.user.name;
+      CAN_EDIT = false;
+      loadClass();
+      return;
+    }
+
+    // The ministry leader may open another shepherd's flock: ?servant=Name
+    var asked = Q.get('servant');
+    SERVANT_NAME = (role === 'leader' && asked) ? asked.trim() : ctx.boot.user.name;
+    CAN_EDIT = (role === 'leader') || SERVANT_NAME === ctx.boot.user.name;
     document.getElementById('servantName').textContent = SERVANT_NAME;
     loadData();
   });
+
+  function loadClass() {
+    apiCached('class', 'flock', { view: 'class' },
+      function (data) {
+        document.querySelector('.header-servant').innerHTML =
+          'Class: <strong>' + escHtml(data.label || 'my class') + '</strong>';
+        FLOCK = data.youths || [];
+        document.getElementById('filterBar').hidden = FLOCK.length === 0;
+        renderBirthdays();
+        renderSummary();
+        renderCards();
+      },
+      function (err) {
+        document.getElementById('cards').innerHTML =
+          '<div class="empty-state"><div class="icon">⚠️</div><p>' + escHtml(err.message) + '</p></div>';
+      });
+  }
 
   function loadData() {
     apiCached('flock.' + SERVANT_NAME, 'flock', { servant: SERVANT_NAME },
@@ -261,7 +291,14 @@
       return;
     }
 
-    var html = '';
+    // Prepended, not written separately: the card markup below replaces the
+    // whole container in one go.
+    var html = CLASS_VIEW
+      ? '<div class="lost-banner" style="margin:0 0 4px"><span class="emoji">👀</span>' +
+        '<span>Viewing your whole class. Reach-outs and notes are recorded by ' +
+        'each youth\'s own servant.</span></div>'
+      : '';
+
     rows.forEach(function (youth, index) {
       html += cardHtml(youth, index);
     });

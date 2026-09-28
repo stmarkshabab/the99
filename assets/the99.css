@@ -731,7 +731,7 @@ body {
 /* ── RESPONSIVE ─────────────────────────────────────────────────────────── */
 
 @media (min-width: 520px) {
-  .container, .summary, .verse-box, .lost-banner, .filter-bar {
+  .container, .summary, .verse-box, .birthday-box, .lost-banner, .filter-bar {
     max-width: 640px; margin-left: auto; margin-right: auto;
   }
   .container { padding: 20px; }

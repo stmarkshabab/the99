@@ -106,7 +106,9 @@
   }
 
   /* ── BOOTSTRAP ── */
-  requireServant({ leaderOnly: true }).then(function () {
+  var ME = null;
+  requireServant().then(function (ctx) {
+    ME = ctx.boot.user;
     apiCached('dashboard', 'dashboard', {}, buildDashboard, function (err) {
       document.getElementById('main').innerHTML =
         '<div class="empty-state"><div class="icon">⚠️</div><p>' + escHtml(err.message) + '</p></div>';
@@ -121,13 +123,26 @@
     var followups    = allFollowups.filter(isSuccessful);
 
     main.innerHTML = '';
-    main.appendChild(buildCelebrationBanner(youth));
+    if (data.banner) main.appendChild(buildCelebrationBanner(data.banner));
 
     var ok = 0, warn = 0, late = 0;
     youth.forEach(function (y) {
       var s = flockState(daysSince(y.Latest_Followup));
       if (s === 'late') late++; else if (s === 'warn') warn++; else ok++;
     });
+
+    /* Your own figures first — that is the part a servant can act on — then
+       the ministry's, so the two can be read against each other. */
+    var role = (ME && ME.role) || 'servant';
+    var mine = youth.filter(function (y) { return y.mine; });
+    if (mine.length) addScopeBlock(main, 'Your flock', mine);
+    if (role === 'class') {
+      var klass = youth.filter(function (y) { return y.inClass; });
+      if (klass.length) {
+        addScopeBlock(main, 'Your class' + (data.scope
+          ? ' · ' + (data.scope.gender || '') + ' year ' + data.scope.years.join(' & ') : ''), klass);
+      }
+    }
 
     appendSection(main, 'The Flock');
     var g1 = el('div', 'stat-grid three');
@@ -155,27 +170,10 @@
      largest flock first. If nobody is at 100%, it honours the closest.
   -------------------------------------------------------------------- */
 
-  function buildCelebrationBanner(youth) {
+  /* The winner is worked out on the server now, so that every servant can be
+     shown the celebration without being sent every other servant's figures. */
+  function buildCelebrationBanner(top) {
     var banner = el('div', 'celebration-banner');
-
-    var sMap = {};
-    youth.forEach(function (y) {
-      var name = (y.Servant_Name || '').trim();
-      if (!name) return;
-      if (!sMap[name]) sMap[name] = { ok: 0, total: 0 };
-      sMap[name].total++;
-      if (flockState(daysSince(y.Latest_Followup)) === 'ok') sMap[name].ok++;
-    });
-
-    // A flock of one or two is too small for the honour to mean much.
-    var MIN_FLOCK = 3;
-    var ranked = Object.keys(sMap)
-      .map(function (n) {
-        return { name: n, ok: sMap[n].ok, total: sMap[n].total,
-                 pct: sMap[n].total ? Math.round(sMap[n].ok / sMap[n].total * 100) : 0 };
-      })
-      .filter(function (r) { return r.total >= MIN_FLOCK; })
-      .sort(function (a, b) { return b.pct - a.pct || b.total - a.total; });
 
     var dotConfigs = [
       { left: 8,  top: 55, size: 5, color: '#D4A853', delay: 0   },
@@ -193,7 +191,7 @@
              'animation-delay:' + d.delay + 's;"></div>';
     }).join('') + '</div>';
 
-    if (!ranked.length) {
+    if (!top) {
       banner.innerHTML = dotsHtml +
         '<div class="banner-inner">' +
           '<div class="banner-medallion"><div class="medallion-num">99</div><div class="medallion-pct">Flock</div></div>' +
@@ -207,9 +205,8 @@
       return banner;
     }
 
-    var top = ranked[0];
     var perfect = top.pct === 100;
-    var alsoPerfect = ranked.filter(function (r) { return r.pct === 100; }).length - 1;
+    var alsoPerfect = top.alsoPerfect || 0;
 
     var desc = perfect
       ? 'Reached every single youth in their flock.<br>Not one lost sheep. 🌿' +
@@ -237,6 +234,21 @@
       '</div>';
 
     return banner;
+  }
+
+  /** One In the Fold / Wandering / Lost row for a subset of the youths. */
+  function addScopeBlock(parent, label, list) {
+    var ok = 0, warn = 0, late = 0;
+    list.forEach(function (y) {
+      var st = flockState(daysSince(y.Latest_Followup));
+      if (st === 'late') late++; else if (st === 'warn') warn++; else ok++;
+    });
+    appendSection(parent, label + ' · ' + list.length);
+    var g = el('div', 'stat-grid three');
+    g.innerHTML = statCard('ok', ok, 'In the Fold') +
+                  statCard('warn', warn, 'Wandering') +
+                  statCard('late', late, 'Lost Sheep');
+    parent.appendChild(g);
   }
 
   function sheepHtml() {
