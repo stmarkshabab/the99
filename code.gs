@@ -157,23 +157,42 @@ function setup() {
     if (iMail == null) {
       bad('Servants.Mail column', 'missing — nobody can sign in');
     } else {
-      var withMail = 0, leaderNames = [];
+      var withMail = 0, leaderNames = [], classNames = [];
+      var iScopeCol = pick(t.index, ['Scope', 'Class', 'Class_Scope']);
+
       for (var r = 0; r < t.rows.length; r++) {
         if (String(t.rows[r][iMail] || '').trim()) withMail++;
-        if (iRole != null) {
-          var role = String(t.rows[r][iRole] || '').trim().toLowerCase();
-          if (role.indexOf('leader') !== -1 || role.indexOf('admin') !== -1) {
-            leaderNames.push(String(t.rows[r][t.index.Full_Name] || '?').trim());
-          }
+        if (iRole == null) continue;
+
+        var nm = String(t.rows[r][t.index.Full_Name] || '?').trim();
+        var rt = String(t.rows[r][iRole] || '').trim().toLowerCase();
+        // Same order as findServant: "Class Leader" must not read as "leader".
+        if (rt.indexOf('class') !== -1) {
+          var sc = iScopeCol == null ? '' : String(t.rows[r][iScopeCol] || '').trim();
+          var parsed = parseScope(sc);
+          classNames.push(nm + ' → ' + (parsed
+            ? (parsed.gender || 'all') + ' year ' + parsed.years.join(' & ')
+            : 'NO USABLE SCOPE, treated as an ordinary servant'));
+        } else if (rt.indexOf('leader') !== -1 || rt.indexOf('admin') !== -1) {
+          leaderNames.push(nm);
         }
       }
+
       ok('Servants with an email', String(withMail));
       if (iRole == null) {
         bad('Servants.Role column', 'missing — nobody can open the dashboard');
       } else if (!leaderNames.length) {
-        bad('Leaders', 'no row has Role = Leader — nobody can open the dashboard');
+        bad('Ministry leaders', 'no row has Role = Leader — nobody can open Shepherds');
       } else {
-        ok('Leaders', leaderNames.join(', '));
+        ok('Ministry leaders', leaderNames.join(', '));
+      }
+      if (classNames.length) {
+        ok('Class leaders', classNames.join('  |  '));
+        if (iScopeCol == null) {
+          bad('Servants.Scope column', 'missing — class leaders fall back to their own flock');
+        }
+      } else {
+        note('Class leaders', '(none)');
       }
     }
   } catch (e) {
