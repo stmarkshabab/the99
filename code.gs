@@ -212,7 +212,7 @@ function setup() {
 
 function doGet(e) {
   if (!e || !e.parameter || !e.parameter.action) {
-    return json({ ok: true, service: 'the99-api', version: 5 });
+    return json({ ok: true, service: 'the99-api', version: 6 });
   }
   return handle(e.parameter);
 }
@@ -517,7 +517,7 @@ function requireMainLeader(user) {
 
 function bootstrap(user) {
   return {
-    apiVersion: 5,
+    apiVersion: 6,
     user: {
       name: user.name,
       email: user.email,
@@ -974,14 +974,31 @@ function findYouth(youthId) {
   return null;
 }
 
-/** Youth_ID -> most recent follow-up Date, read straight from the log. */
+/**
+ * Youth_ID -> most recent SUCCESSFUL follow-up.
+ *
+ * An attempt that did not reach the youth is still worth recording — it shows
+ * the servant tried — but it must not move anyone back into the fold. This
+ * matches the sheet's own Latest_Followup formula, which has always filtered
+ * on Successful? = "Yes"; the app used to count every attempt, so a call that
+ * went unanswered quietly reset the clock here while the sheet ignored it.
+ */
 function lastFollowupByYouth() {
   var t = cachedTable(SHEETS.logs);
+  var iOk = pick(t.index, ['Successful?', 'Successful', 'Success']);
   var out = {};
+
   for (var r = 0; r < t.rows.length; r++) {
-    var id = String(t.rows[r][t.index.Youth_ID] || '').trim();
+    var row = t.rows[r];
+    var id = String(row[t.index.Youth_ID] || '').trim();
     if (!id) continue;
-    var d = toDate(t.rows[r][t.index.Date]);
+
+    if (iOk != null) {
+      var ok = String(row[iOk] || '').trim().toLowerCase();
+      if (ok !== 'yes' && ok !== 'true' && ok !== '1') continue;
+    }
+
+    var d = toDate(row[t.index.Date]);
     if (!d) continue;
     if (!out[id] || d.getTime() > out[id].getTime()) out[id] = d;
   }

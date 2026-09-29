@@ -39,10 +39,14 @@
   <div class="offline-bar" id="offlineBar" hidden>⚠ You are offline — saving is paused</div>
 
   <div class="header">
-    <div class="header-tools" id="header-tools"></div>
-    <div class="header-emblem">🐑</div>
-    <div class="header-brand">The 99</div>
-    <div class="header-sub">St. Mark Youth Follow-Up</div>
+    <div class="header-title">
+      <span class="header-title__pad"></span>
+      <span class="header-mark">
+        <span class="header-emblem">🐑</span>
+        <span class="header-brand">The 99</span>
+      </span>
+      <span class="header-tools" id="header-tools"></span>
+    </div>
     <div class="header-servant">Servant: <strong id="servantName"></strong></div>
     <nav class="nav" id="nav" hidden></nav>
   </div>
@@ -454,12 +458,21 @@
     btn.disabled = true;
     btn.classList.add('loading');
 
+    var reached = document.getElementById('success_' + index).checked;
+
     api('logFollowup', {
       youthId: youth.Youth_ID,
       type: document.getElementById('type_' + index).value,
-      successful: document.getElementById('success_' + index).checked
+      successful: reached
     }).then(function () {
-      showToast('✔ Logged for ' + youth.Full_Name, '#5A7A5A');
+      // Only a reach-out that landed moves anyone back into the fold, so say
+      // so plainly — otherwise an unchanged card looks like a failed save.
+      if (reached) {
+        showToast('✔ Logged for ' + youth.Full_Name, '#5A7A5A');
+      } else {
+        showToast('Logged as not reached — ' + youth.Full_Name.split(/\s+/)[0] +
+                  ' stays where they are', '#C07A1A');
+      }
       setTimeout(function () {
         document.getElementById('reloadOverlay').classList.add('show');
         api('flock', { servant: SERVANT_NAME }).then(function (data) {

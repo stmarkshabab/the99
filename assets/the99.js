@@ -8,7 +8,7 @@
 
 /* Build marker. Must match the backend's apiVersion (code.gs). Check in the
    console with THE99_BUILD; the backend's is at the /exec URL's "version". */
-var THE99_BUILD = 8;
+var THE99_BUILD = 9;
 window.THE99_BUILD = THE99_BUILD;
 
 var CFG = window.APP_CONFIG || {};
@@ -364,8 +364,8 @@ function requireServant(opts) {
             'to sign in again on every page.\n\n' +
             'In the Apps Script editor: paste the current code.gs, then\n' +
             'Deploy > Manage deployments > edit > Version: New version > Deploy.' +
-            (boot.apiVersion ? '\n\nBackend reports version ' + boot.apiVersion + ', expected 5.'
-                             : '\n\nBackend reports no version, expected 5.'));
+            (boot.apiVersion ? '\n\nBackend reports version ' + boot.apiVersion + ', expected 6.'
+                             : '\n\nBackend reports no version, expected 6.'));
           return;
         }
 
