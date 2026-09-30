@@ -80,6 +80,12 @@
       </select>
       <span class="filter-count" id="filterCount"></span>
     </div>
+    <div class="filter-line" id="filterRow2" hidden>
+      <select class="filter-select" id="fYear"><option value="">All years</option></select>
+      <select class="filter-select" id="fGender"><option value="">All</option>
+        <option value="Female">Female</option><option value="Male">Male</option></select>
+      <select class="filter-select" id="fServant"><option value="">All servants</option></select>
+    </div>
   </div>
 
   <div class="container" id="cards">
@@ -110,16 +116,40 @@
   setRandomVerse();
 
   var Q = new URLSearchParams(location.search);
-  var CLASS_VIEW = Q.get('view') === 'class';
+  var VIEW = Q.get('view') === 'class' ? 'class'
+           : Q.get('view') === 'all'   ? 'all'
+           : 'mine';
+  var CLASS_VIEW = VIEW === 'class';
+  var BIG_VIEW   = VIEW !== 'mine';          // hundreds of youths, not dozens
 
-  requireServant(CLASS_VIEW ? { classOnly: true } : {}).then(function (ctx) {
+  // What was asked for, so a refresh after logging re-asks the same thing.
+  var FLOCK_REQUEST = {};
+  var FLOCK_CACHE_KEY = '';
+
+  var gate = VIEW === 'class' ? { classOnly: true }
+           : VIEW === 'all'   ? { leaderOnly: true }
+           : {};
+
+  requireServant(gate).then(function (ctx) {
     var role = ctx.boot.user.role || (ctx.boot.user.isLeader ? 'leader' : 'servant');
+    var head = document.querySelector('.header-servant');
 
-    if (CLASS_VIEW) {
-      // A class leader looking at their whole class — read only.
+    if (VIEW === 'all') {
       SERVANT_NAME = ctx.boot.user.name;
-      CAN_EDIT = false;
-      loadClass();
+      CAN_EDIT = true;
+      document.getElementById('sortBy').value = 'name';   // a directory reads A–Z
+      loadFlock('all', { view: 'all' }, function (data) {
+        head.innerHTML = 'All youths · <strong>' + (data.youths || []).length + '</strong>';
+      });
+      return;
+    }
+
+    if (VIEW === 'class') {
+      SERVANT_NAME = ctx.boot.user.name;
+      CAN_EDIT = false;                                      // look, do not touch
+      loadFlock('class', { view: 'class' }, function (data) {
+        head.innerHTML = 'Class: <strong>' + escHtml(data.label || 'my class') + '</strong>';
+      });
       return;
     }
 
@@ -128,16 +158,18 @@
     SERVANT_NAME = (role === 'leader' && asked) ? asked.trim() : ctx.boot.user.name;
     CAN_EDIT = (role === 'leader') || SERVANT_NAME === ctx.boot.user.name;
     document.getElementById('servantName').textContent = SERVANT_NAME;
-    loadData();
+    loadFlock('flock.' + SERVANT_NAME, { servant: SERVANT_NAME }, null);
   });
 
-  function loadClass() {
-    apiCached('class', 'flock', { view: 'class' },
+  function loadFlock(cacheKey, request, onHeader) {
+    FLOCK_REQUEST = request;
+    FLOCK_CACHE_KEY = cacheKey;
+    apiCached(cacheKey, 'flock', request,
       function (data) {
-        document.querySelector('.header-servant').innerHTML =
-          'Class: <strong>' + escHtml(data.label || 'my class') + '</strong>';
         FLOCK = data.youths || [];
+        if (onHeader) onHeader(data);
         document.getElementById('filterBar').hidden = FLOCK.length === 0;
+        populateFilters();
         renderBirthdays();
         renderSummary();
         renderCards();
@@ -148,19 +180,26 @@
       });
   }
 
-  function loadData() {
-    apiCached('flock.' + SERVANT_NAME, 'flock', { servant: SERVANT_NAME },
-      function (data) {
-        FLOCK = data.youths || [];
-        document.getElementById('filterBar').hidden = FLOCK.length === 0;
-        renderBirthdays();
-        renderSummary();
-        renderCards();
-      },
-      function (err) {
-        document.getElementById('cards').innerHTML =
-          '<div class="empty-state"><div class="icon">⚠️</div><p>' + escHtml(err.message) + '</p></div>';
-      });
+  /* Year / Gender / Servant only earn their space on the big views. */
+  function populateFilters() {
+    var row = document.getElementById('filterRow2');
+    if (!BIG_VIEW) { row.hidden = true; return; }
+    row.hidden = false;
+
+    var years = {}, servants = {};
+    FLOCK.forEach(function (y) {
+      if (y.Year) years[y.Year] = true;
+      if (y.Servant_Name) servants[String(y.Servant_Name).trim()] = true;
+    });
+    var fy = document.getElementById('fYear'), fs = document.getElementById('fServant');
+    fy.innerHTML = '<option value="">All years</option>' +
+      Object.keys(years).sort(function (a, b) { return a.localeCompare(b, undefined, { numeric: true }); })
+        .map(function (v) { return '<option value="' + escHtml(v) + '">Year ' + escHtml(v) + '</option>'; }).join('');
+    fs.innerHTML = '<option value="">All servants</option>' +
+      Object.keys(servants).sort()
+        .map(function (v) { return '<option value="' + escHtml(v) + '">' + escHtml(v) + '</option>'; }).join('');
+    // A class is one gender already; the control would only ever have one answer.
+    document.getElementById('fGender').hidden = CLASS_VIEW;
   }
 
   /* ── BIRTHDAYS ─────────────────────────────────────────────────────── */
@@ -181,7 +220,14 @@
       ? (todayCount === 1 ? 'A birthday today' : todayCount + ' birthdays today')
       : 'Birthdays this week';
 
-    document.getElementById('birthdayList').innerHTML = soon.map(function (b) {
+    // Across the whole ministry a week can hold a dozen birthdays; the panel
+    // is a prompt, not a register, so it shows the first few and says how
+    // many more there are. A servant's own flock rarely reaches the cap.
+    var CAP = 6;
+    var extra = soon.length > CAP ? soon.length - CAP : 0;
+    var shownSoon = extra ? soon.slice(0, CAP) : soon;
+
+    document.getElementById('birthdayList').innerHTML = shownSoon.map(function (b) {
       var y = b.youth, info = b.birthday;
       var wa = cleanPhone(y.Mobile);
       // Arabic agrees with gender; the masculine form for a young woman reads
@@ -206,7 +252,9 @@
         (wa ? '<a class="birthday-wish" href="https://wa.me/' + wa + '?text=' + greeting +
               '" target="_blank" rel="noopener">💬 Wish</a>' : '') +
       '</li>';
-    }).join('');
+    }).join('') + (extra
+      ? '<li class="birthday-more">and ' + extra + ' more this week — search a name to find them</li>'
+      : '');
   }
 
   /* ── SUMMARY CHIPS (also the state filter) ─────────────────────────── */
@@ -254,8 +302,14 @@
 
   function visibleYouths() {
     var q = document.getElementById('searchBox').value.trim().toLowerCase();
+    var fYear = document.getElementById('fYear').value;
+    var fGender = document.getElementById('fGender').value;
+    var fServant = document.getElementById('fServant').value;
     var rows = FLOCK.filter(function (y) {
       if (stateFilter && flockState(daysSince(y.Latest_Followup)) !== stateFilter) return false;
+      if (fYear && String(y.Year) !== fYear) return false;
+      if (fGender && String(y.Gender).trim() !== fGender) return false;
+      if (fServant && String(y.Servant_Name || '').trim() !== fServant) return false;
       return matchesQuery(y, q);
     });
 
@@ -277,9 +331,22 @@
     return rows;
   }
 
+  /* Two things keep this quick at hundreds of youths:
+       1. only the first PAGE cards are put in the DOM, more arriving as you
+          scroll (or on a tap of "Show more");
+       2. a card is rendered as its header only — the details, notes box and
+          reach-out form are built the first time that card is opened.
+     Together they cut the initial DOM by roughly 95% on a 450-youth list. */
+  var PAGE = 40;
+  var VISIBLE = [];        // every youth matching the current search/filters
+  var shown = 0;           // how many of VISIBLE are currently in the DOM
+  var sentinelObserver = null;
+
   function renderCards() {
     var container = document.getElementById('cards');
     container.innerHTML = '';
+    shown = 0;
+    if (sentinelObserver) { sentinelObserver.disconnect(); sentinelObserver = null; }
 
     if (!FLOCK.length) {
       container.innerHTML = '<div class="empty-state"><div class="icon">🐑</div><p>No youth assigned yet.</p></div>';
@@ -287,34 +354,54 @@
       return;
     }
 
-    var rows = visibleYouths();
-    document.getElementById('filterCount').textContent = rows.length + ' of ' + FLOCK.length;
+    VISIBLE = visibleYouths();
+    document.getElementById('filterCount').textContent = VISIBLE.length + ' of ' + FLOCK.length;
 
-    if (!rows.length) {
+    if (!VISIBLE.length) {
       container.innerHTML = '<div class="empty-state"><div class="icon">🔍</div><p>No one matches that search.</p></div>';
       return;
     }
 
-    // Prepended, not written separately: the card markup below replaces the
-    // whole container in one go.
-    var html = CLASS_VIEW
-      ? '<div class="lost-banner" style="margin:0 0 4px"><span class="emoji">👀</span>' +
+    if (CLASS_VIEW) {
+      container.innerHTML =
+        '<div class="lost-banner" style="margin:0 0 4px"><span class="emoji">👀</span>' +
         '<span>Viewing your whole class. Reach-outs and notes are recorded by ' +
-        'each youth\'s own servant.</span></div>'
-      : '';
-
-    rows.forEach(function (youth, index) {
-      html += cardHtml(youth, index);
-    });
-    container.innerHTML = html;
-
-    // Keep the index used by the inline handlers aligned with what is rendered.
-    VISIBLE = rows;
+        'each youth&#39;s own servant.</span></div>';
+    }
+    appendMore();
   }
 
-  var VISIBLE = [];
+  function appendMore() {
+    var container = document.getElementById('cards');
+    var old = document.getElementById('showMore');
+    if (old) old.remove();
 
-  function cardHtml(youth, index) {
+    var next = Math.min(VISIBLE.length, shown + PAGE);
+    var html = '';
+    for (var i = shown; i < next; i++) html += cardHtml(VISIBLE[i], i);
+    container.insertAdjacentHTML('beforeend', html);
+    shown = next;
+
+    if (shown < VISIBLE.length) {
+      container.insertAdjacentHTML('beforeend',
+        '<button class="show-more" id="showMore" type="button">Show ' +
+        Math.min(PAGE, VISIBLE.length - shown) + ' more · ' + (VISIBLE.length - shown) +
+        ' remaining</button>');
+      var btn = document.getElementById('showMore');
+      btn.onclick = appendMore;
+      // Also load as the button scrolls into view, so scrolling just works.
+      if ('IntersectionObserver' in window) {
+        sentinelObserver = new IntersectionObserver(function (entries) {
+          if (entries.some(function (e) { return e.isIntersecting; })) {
+            sentinelObserver.disconnect(); sentinelObserver = null; appendMore();
+          }
+        }, { rootMargin: '600px 0px' });
+        sentinelObserver.observe(btn);
+      }
+    }
+  }
+
+  function cardParts(youth, index) {
     var days  = daysSince(youth.Latest_Followup);
     var state = flockState(days);
 
@@ -378,8 +465,8 @@
         '</div>'
       : '';
 
-    return '' +
-      '<div class="card ' + highlightClass + '">' +
+    var head =
+      '<div class="card ' + highlightClass + '" data-i="' + index + '">' +
         '<div class="card-header" onclick="toggleCard(this)">' +
           '<div class="top-row">' +
             '<div class="name" dir="auto">' + escHtml(youth.Full_Name || '') +
@@ -392,7 +479,10 @@
             '<div class="expand-indicator">▼</div>' +
           '</div>' +
         '</div>' +
-        '<div class="card-content">' +
+        '<div class="card-content"></div>' +
+      '</div>';
+
+    var body =
           '<div class="info">' +
             '<div class="info-section-title">Contact</div>' +
             infoItem('Mobile',   youth.Mobile) +
@@ -417,10 +507,13 @@
             (whatsappLink ? '<a class="btn whatsapp" href="' + whatsappLink + '" target="_blank" rel="noopener">💬 WhatsApp</a>' : '') +
             (callLink     ? '<a class="btn call" href="' + callLink + '">📞 Call</a>' : '') +
           '</div>' +
-          followupHtml +
-        '</div>' +
-      '</div>';
+          followupHtml;
+
+    return { head: head, body: body };
   }
+
+  // The list only ever needs the header; the body is fetched when opened.
+  function cardHtml(youth, index) { return cardParts(youth, index).head; }
 
   /* ── INFO ROW HELPERS ──────────────────────────────────────────────── */
 
@@ -442,7 +535,15 @@
 
   /* ── INTERACTION ───────────────────────────────────────────────────── */
 
-  window.toggleCard = function (header) { header.parentElement.classList.toggle('open'); };
+  window.toggleCard = function (header) {
+    var card = header.parentElement;
+    var content = card.querySelector('.card-content');
+    if (content && !content.firstChild) {
+      var i = Number(card.getAttribute('data-i'));
+      if (VISIBLE[i]) content.innerHTML = cardParts(VISIBLE[i], i).body;
+    }
+    card.classList.toggle('open');
+  };
 
   window.toggleFollowup = function (element) {
     var c = element.nextElementSibling;
@@ -475,9 +576,9 @@
       }
       setTimeout(function () {
         document.getElementById('reloadOverlay').classList.add('show');
-        api('flock', { servant: SERVANT_NAME }).then(function (data) {
+        api('flock', FLOCK_REQUEST).then(function (data) {
           try {
-            localStorage.setItem('the99.cache.flock.' + SERVANT_NAME,
+            localStorage.setItem('the99.cache.' + FLOCK_CACHE_KEY,
               JSON.stringify({ at: Date.now(), data: data }));
           } catch (e) { /* ignore */ }
           document.getElementById('reloadOverlay').classList.remove('show');
@@ -519,8 +620,16 @@
     });
   };
 
-  document.getElementById('searchBox').addEventListener('input', renderCards);
-  document.getElementById('sortBy').addEventListener('change', renderCards);
+  // Typing re-filters 450 youths cheaply, but re-rendering on every keystroke
+  // is what used to stutter; a short debounce makes it feel instant.
+  var searchTimer = null;
+  document.getElementById('searchBox').addEventListener('input', function () {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(renderCards, 140);
+  });
+  ['sortBy', 'fYear', 'fGender', 'fServant'].forEach(function (id) {
+    document.getElementById(id).addEventListener('change', renderCards);
+  });
 })();
 </script>
 <script src="https://accounts.google.com/gsi/client" async defer

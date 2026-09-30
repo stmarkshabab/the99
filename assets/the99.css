@@ -326,6 +326,11 @@ body {
 }
 .birthday-wish:active { transform: scale(.96); }
 
+.birthday-more {
+  padding: 10px 2px 8px; font-size: calc(var(--base) * 0.75);
+  color: var(--clay); font-weight: 600; text-align: center;
+}
+
 /* A quiet marker on the matching card further down the list. */
 .cake { font-size: calc(var(--base) * 0.9); margin-inline-start: 6px; }
 
@@ -363,7 +368,7 @@ body {
 }
 .search-box:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 3px rgba(212,168,83,.15); }
 .filter-line { display: flex; gap: 8px; align-items: center; }
-.filter-line .filter-select { flex: 1; }
+.filter-line .filter-select { flex: 1; min-width: 0; }
 .filter-count {
   font-size: calc(var(--base) * 0.6875); font-weight: 700; color: var(--clay);
   letter-spacing: .8px; text-transform: uppercase; white-space: nowrap;
@@ -376,6 +381,17 @@ body {
   appearance: none; -webkit-appearance: none; cursor: pointer;
 }
 .filter-select:focus { outline: none; border-color: var(--gold); }
+
+/* ── SHOW MORE (paged list) ─────────────────────────────────────────────── */
+
+.show-more {
+  width: 100%; padding: 15px 18px; margin-top: 4px;
+  border-radius: 14px; border: 1.5px dashed rgba(200,149,90,.45);
+  background: rgba(212,168,83,.08); color: var(--clay);
+  font-family: 'DM Sans', sans-serif; font-size: calc(var(--base) * 0.875);
+  font-weight: 700; letter-spacing: .5px; cursor: pointer;
+}
+.show-more:active { transform: scale(.985); }
 
 /* ── YOUTH CARD ─────────────────────────────────────────────────────────── */
 

@@ -52,7 +52,12 @@ Open the spreadsheet (`1v4CpILHr2ZuN2SeCfBh-HS6sCSDTRCsFJoJ1Y7X1p50`).
 |---|---|---|
 | *(blank)* | — | Their own flock, and the dashboard |
 | `Class Leader` | `Female 3` | The above, plus **read-only** view of every female in year 3 |
-| `Leader` | — | Everything: every flock, the Shepherds ranking, the dashboard |
+| `Leader` | — | Everything: the whole register, every flock, the Shepherds ranking, the dashboard |
+
+The ministry leader's first tab is **All Youths** rather than *My Flock*, since
+leaders rarely have youths assigned directly. It lists the entire register
+with search plus Year / Gender / Servant filters, sorted A–Z. Tapping a name
+from the Shepherds page still opens that servant's flock on its own.
 
 **Years 4 and 5 are one batch** — a Scope of `Male 4` or `Male 5` both cover
 years 4 *and* 5. Year 6 is deliberately left out of that batching while those
@@ -297,6 +302,13 @@ thing it does. Three things keep the app feeling quick:
 - **The pages render from the last response first**, then refresh from the
   network and re-render. Revisiting a tab shows content in about 0.2s instead
   of waiting a second or two on every navigation.
+- **Long lists render lazily.** Only the first 40 cards are put on the page,
+  more arriving as you scroll (or on *Show more*); each card is drawn as its
+  header alone, with details, notes and the reach-out form built the first
+  time it is opened; and search waits 140ms after the last keystroke before
+  re-rendering. Measured with 450 youths: the old way built 34,000 DOM
+  elements and 450 text boxes up front and stalled 73ms per keystroke; the new
+  way builds 361 elements and stalls for none.
 - **The dashboard only receives the fields it uses.** It groups and counts; it
   never shows a phone number. Sending whole rows meant ~380KB a load, so it is
   projected down to about 110KB — and the contact details stay off the wire.

@@ -8,7 +8,7 @@
 
 /* Build marker. Must match the backend's apiVersion (code.gs). Check in the
    console with THE99_BUILD; the backend's is at the /exec URL's "version". */
-var THE99_BUILD = 9;
+var THE99_BUILD = 10;
 window.THE99_BUILD = THE99_BUILD;
 
 var CFG = window.APP_CONFIG || {};
@@ -364,8 +364,8 @@ function requireServant(opts) {
             'to sign in again on every page.\n\n' +
             'In the Apps Script editor: paste the current code.gs, then\n' +
             'Deploy > Manage deployments > edit > Version: New version > Deploy.' +
-            (boot.apiVersion ? '\n\nBackend reports version ' + boot.apiVersion + ', expected 6.'
-                             : '\n\nBackend reports no version, expected 6.'));
+            (boot.apiVersion ? '\n\nBackend reports version ' + boot.apiVersion + ', expected 7.'
+                             : '\n\nBackend reports no version, expected 7.'));
           return;
         }
 
@@ -441,7 +441,11 @@ function mountChrome(boot) {
   var nav = document.getElementById('nav');
   if (nav) {
     var role = boot.user.role || (boot.user.isLeader ? 'leader' : 'servant');
-    var links = ['<a href="index.html">My Flock</a>'];
+    // The ministry leader rarely has youths assigned directly, so their
+    // first tab is the whole register rather than an empty flock.
+    var links = role === 'leader'
+      ? ['<a href="index.html?view=all">All Youths</a>']
+      : ['<a href="index.html">My Flock</a>'];
 
     if (role === 'class') links.push('<a href="index.html?view=class">My Class</a>');
     if (role === 'leader') links.push('<a href="shepherds.html">Shepherds</a>');
@@ -451,9 +455,9 @@ function mountChrome(boot) {
     nav.innerHTML = links.join('');
 
     var here = location.pathname.split('/').pop() || 'index.html';
-    var classView = /[?&]view=class\b/.test(location.search);
+    var m = /[?&]view=(class|all)\b/.exec(location.search);
     var want = here === 'index.html'
-      ? (classView ? 'index.html?view=class' : 'index.html')
+      ? (m ? 'index.html?view=' + m[1] : 'index.html')
       : here;
 
     var els = nav.querySelectorAll('a');
