@@ -116,8 +116,9 @@
   setRandomVerse();
 
   var Q = new URLSearchParams(location.search);
-  var VIEW = Q.get('view') === 'class' ? 'class'
-           : Q.get('view') === 'all'   ? 'all'
+  var VIEW = Q.get('view') === 'class'      ? 'class'
+           : Q.get('view') === 'all'        ? 'all'
+           : Q.get('view') === 'unassigned' ? 'unassigned'
            : 'mine';
   var CLASS_VIEW = VIEW === 'class';
   var BIG_VIEW   = VIEW !== 'mine';          // hundreds of youths, not dozens
@@ -127,7 +128,7 @@
   var FLOCK_CACHE_KEY = '';
 
   var gate = VIEW === 'class' ? { classOnly: true }
-           : VIEW === 'all'   ? { leaderOnly: true }
+           : (VIEW === 'all' || VIEW === 'unassigned') ? { leaderOnly: true }
            : {};
 
   requireServant(gate).then(function (ctx) {
@@ -140,6 +141,16 @@
       document.getElementById('sortBy').value = 'name';   // a directory reads A–Z
       loadFlock('all', { view: 'all' }, function (data) {
         head.innerHTML = 'All youths · <strong>' + (data.youths || []).length + '</strong>';
+      });
+      return;
+    }
+
+    if (VIEW === 'unassigned') {
+      SERVANT_NAME = ctx.boot.user.name;
+      CAN_EDIT = true;
+      document.getElementById('sortBy').value = 'name';
+      loadFlock('unassigned', { view: 'unassigned' }, function (data) {
+        head.innerHTML = 'No servant yet · <strong>' + (data.youths || []).length + '</strong>';
       });
       return;
     }
@@ -200,6 +211,8 @@
         .map(function (v) { return '<option value="' + escHtml(v) + '">' + escHtml(v) + '</option>'; }).join('');
     // A class is one gender already; the control would only ever have one answer.
     document.getElementById('fGender').hidden = CLASS_VIEW;
+    // And nobody in the unassigned list has a servant to filter by.
+    fs.hidden = VIEW === 'unassigned';
   }
 
   /* ── BIRTHDAYS ─────────────────────────────────────────────────────── */
@@ -272,7 +285,14 @@
       chip('late', late, 'Lost Sheep');
 
     var banner = document.getElementById('lostBanner');
-    if (late > 0) {
+    if (VIEW === 'unassigned' && FLOCK.length) {
+      // Nobody is going after these yet — the action here is to assign, and
+      // that happens in the sheet, not the app.
+      banner.hidden = false;
+      document.getElementById('lostBannerText').textContent =
+        FLOCK.length + (FLOCK.length === 1 ? ' youth has' : ' youths have') +
+        ' no servant. Fill in Servant_Name in the sheet and each one moves to that flock.';
+    } else if (late > 0) {
       banner.hidden = false;
       document.getElementById('lostBannerText').textContent =
         late === 1 ? 'One sheep is lost. Go after it.'
@@ -474,6 +494,11 @@
                 ? '<span class="cake" title="Birthday this week">🎂</span>' : '') + '</div>' +
             '<div class="badge ' + badgeClass + '">' + escHtml(youth.Status || 'Active') + '</div>' +
           '</div>' +
+          (BIG_VIEW
+            ? (String(youth.Servant_Name || '').trim()
+                ? '<div class="servant-tag">🐑 ' + escHtml(String(youth.Servant_Name).trim()) + '</div>'
+                : '<div class="servant-tag servant-tag--none">No servant assigned</div>')
+            : '') +
           '<div class="bottom-row">' +
             '<div class="days-badge ' + daysClass + '">' + daysIcon + ' ' + daysText + '</div>' +
             '<div class="expand-indicator">▼</div>' +
@@ -500,6 +525,7 @@
             infoItem('Talent',          youth.Talent) +
             infoItem('Talent Category', youth.Talent_Category) +
             '<div class="info-section-title">Follow-Up</div>' +
+            (BIG_VIEW ? infoItem('Servant', String(youth.Servant_Name || '').trim() || '— none —') : '') +
             infoItem('Last Contact', formatDate(youth.Latest_Followup)) +
             notesHtml +
           '</div>' +

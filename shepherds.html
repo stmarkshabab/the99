@@ -88,9 +88,17 @@
                    statCard('late', totalLate, 'Lost Sheep');
     main.appendChild(g1);
 
-    var g2 = el('div', 'stat-grid');
+    var unassigned = null;
+    servants = servants.filter(function (d) {
+      if (d.servant === 'Unassigned') { unassigned = d; return false; }
+      return true;
+    });
+    var unassignedCount = unassigned ? unassigned.ok + unassigned.warn + unassigned.late : 0;
+
+    var g2 = el('div', 'stat-grid three');
     g2.innerHTML = statCard('dark', youthCount, 'Total Shabab') +
-                   statCard('dark', totalLogs,  'Reach-Outs');
+                   statCard('dark', totalLogs,  'Reach-Outs') +
+                   statCard(unassignedCount ? 'late' : 'dark', unassignedCount, 'Unassigned');
     main.appendChild(g2);
 
     /* ── SEARCH + CARDS ── */
@@ -105,6 +113,28 @@
     var listWrap = el('div', '');
     listWrap.id = 'servantList';
     listWrap.style.cssText = 'display:flex;flex-direction:column;gap:10px;margin-top:4px';
+
+    /* Youths with no servant are not a shepherd, so they are not ranked —
+       they sit at the top, in amber, because each one needs a decision. */
+    if (unassigned && unassignedCount) {
+      var ua = el('a', 'shepherd-card unassigned');
+      ua.href = 'index.html?view=unassigned';
+      ua.setAttribute('data-name', 'unassigned no servant');
+      ua.innerHTML =
+        '<div class="sc-inner">' +
+          '<div class="sc-avatar">?</div>' +
+          '<div class="sc-body">' +
+            '<div class="sc-name">No servant yet</div>' +
+            '<div class="sc-sub"><span>' + unassignedCount + ' youth' + (unassignedCount === 1 ? '' : 's') +
+            ' waiting to be assigned — tap to see them</span></div>' +
+          '</div>' +
+          '<div class="sc-pills">' +
+            '<div class="sc-total">' + unassignedCount + '</div>' +
+            '<div class="sc-arrow">›</div>' +
+          '</div>' +
+        '</div>';
+      listWrap.appendChild(ua);
+    }
 
     servants.forEach(function (d) {
       var s = d.servant;
@@ -123,6 +153,7 @@
           '<div class="sc-body">' +
             '<div class="sc-name" dir="auto">' + escHtml(s) + '</div>' +
             '<div class="sc-sub">' +
+              '<span><span class="pill pill-total">' + total + '</span> youths</span>' +
               '<span><span class="pill pill-ok">'   + d.ok   + '</span> Fold</span>' +
               '<span><span class="pill pill-warn">' + d.warn + '</span> Wander</span>' +
               '<span><span class="pill pill-late">' + d.late + '</span> Lost</span>' +

@@ -212,7 +212,7 @@ function setup() {
 
 function doGet(e) {
   if (!e || !e.parameter || !e.parameter.action) {
-    return json({ ok: true, service: 'the99-api', version: 7 });
+    return json({ ok: true, service: 'the99-api', version: 8 });
   }
   return handle(e.parameter);
 }
@@ -517,7 +517,7 @@ function requireMainLeader(user) {
 
 function bootstrap(user) {
   return {
-    apiVersion: 7,
+    apiVersion: 8,
     user: {
       name: user.name,
       email: user.email,
@@ -545,6 +545,7 @@ function bootstrap(user) {
  *   view 'class'   every youth in their class, read-only  (class leader, leader)
  *   view 'servant' another servant's flock                (leader only)
  *   view 'all'     every youth in the register            (leader only)
+ *   view 'unassigned'  youths with no Servant_Name          (leader only)
  */
 function getFlock(user, payload) {
   var view = String(payload.view || '').trim();
@@ -556,6 +557,16 @@ function getFlock(user, payload) {
   var t = cachedTable(SHEETS.youths);
   var lastLog = lastFollowupByYouth();
   var out = [];
+
+  if (view === 'unassigned') {
+    requireMainLeader(user);
+    for (var u = 0; u < t.rows.length; u++) {
+      if (!String(t.rows[u][t.index.Youth_ID] || '').trim()) continue;
+      if (String(t.rows[u][t.index.Servant_Name] || '').trim()) continue;
+      out.push(youthObject(t, t.rows[u], lastLog));
+    }
+    return { view: 'unassigned', youths: out, canWrite: true };
+  }
 
   if (view === 'all') {
     requireMainLeader(user);

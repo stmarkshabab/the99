@@ -424,6 +424,14 @@ body {
 .days-ok { color: var(--sage); } .days-warn { color: var(--amber); } .days-late { color: var(--red); }
 
 .expand-indicator { font-size: calc(var(--base) * 0.8125); color: var(--clay); opacity: 0.5; transition: transform .3s; flex-shrink: 0; }
+
+/* Whose youth this is — shown on the big views, where cards span many flocks. */
+.servant-tag {
+  display: flex; align-items: center; gap: 5px;
+  font-size: calc(var(--base) * 0.75); font-weight: 600; color: var(--clay);
+  margin-top: -3px;
+}
+.servant-tag--none { color: var(--amber); }
 .card.open .expand-indicator { transform: rotate(180deg); }
 
 .card-content { max-height: 0; overflow: hidden; transition: max-height .4s cubic-bezier(.4,0,.2,1); border-top: 1px solid rgba(59,42,26,.07); }
@@ -558,6 +566,12 @@ body {
 .shepherd-card.all-ok   { border-left: 5px solid var(--sage); }
 .shepherd-card.has-warn { border-left: 5px solid var(--amber); }
 .shepherd-card.has-late { border-left: 5px solid var(--red); }
+.shepherd-card.unassigned { border-left: 5px solid var(--amber); background: #FFF8EE; }
+.shepherd-card.unassigned .sc-avatar { background: var(--amber-bg); border-color: var(--amber); color: var(--amber); }
+.sc-total {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: calc(var(--base) * 1.5); font-weight: 700; line-height: 1; color: var(--amber);
+}
 
 .sc-inner { padding: 16px 18px; display: flex; align-items: center; gap: 14px; }
 .sc-avatar {
@@ -584,6 +598,7 @@ body {
 .pill-ok   { background: var(--sage-bg);  color: var(--sage); }
 .pill-warn { background: var(--amber-bg); color: var(--amber); }
 .pill-late { background: var(--red-bg);   color: var(--red); }
+.pill-total { background: rgba(59,42,26,0.08); color: var(--earth); }
 
 /* ── CHART CARD ─────────────────────────────────────────────────────────── */
 

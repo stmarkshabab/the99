@@ -59,6 +59,16 @@ leaders rarely have youths assigned directly. It lists the entire register
 with search plus Year / Gender / Servant filters, sorted A–Z. Tapping a name
 from the Shepherds page still opens that servant's flock on its own.
 
+On every view that spans more than one flock (All Youths, My Class, the
+unassigned list) each card shows **whose youth it is** under the name, and a
+*Servant* row inside the card. A youth with no servant is marked in amber.
+
+**Shepherds** shows each servant's total alongside Fold / Wander / Lost, and
+pins a **No servant yet** entry at the top with the count of youths who have
+no `Servant_Name`. Tapping it lists them. Assigning is done in the sheet —
+fill in `Servant_Name` and the youth moves to that servant's flock within a
+minute.
+
 **Years 4 and 5 are one batch** — a Scope of `Male 4` or `Male 5` both cover
 years 4 *and* 5. Year 6 is deliberately left out of that batching while those
 youths await a decision on graduating, so no class sweeps them up.
