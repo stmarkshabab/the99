@@ -275,7 +275,7 @@
   function renderSummary() {
     var ok = 0, warn = 0, late = 0;
     FLOCK.forEach(function (y) {
-      var s = flockState(daysSince(y.Latest_Followup));
+      var s = flockState(daysFor(y));
       if (s === 'late') late++; else if (s === 'warn') warn++; else ok++;
     });
 
@@ -326,7 +326,7 @@
     var fGender = document.getElementById('fGender').value;
     var fServant = document.getElementById('fServant').value;
     var rows = FLOCK.filter(function (y) {
-      if (stateFilter && flockState(daysSince(y.Latest_Followup)) !== stateFilter) return false;
+      if (stateFilter && flockState(daysFor(y)) !== stateFilter) return false;
       if (fYear && String(y.Year) !== fYear) return false;
       if (fGender && String(y.Gender).trim() !== fGender) return false;
       if (fServant && String(y.Servant_Name || '').trim() !== fServant) return false;
@@ -335,7 +335,7 @@
 
     // Never-reached sorts as infinitely overdue, the same way it displays.
     function urgency(y) {
-      var d = daysSince(y.Latest_Followup);
+      var d = daysFor(y);
       return d === null ? Infinity : d;
     }
     var sort = document.getElementById('sortBy').value;
@@ -422,7 +422,7 @@
   }
 
   function cardParts(youth, index) {
-    var days  = daysSince(youth.Latest_Followup);
+    var days  = daysFor(youth);
     var state = flockState(days);
 
     var highlightClass = state === 'late' ? 'highlight-danger'
@@ -561,6 +561,16 @@
 
   /* ── INTERACTION ───────────────────────────────────────────────────── */
 
+  /* Shepherds and the dashboard render from their last response first. After
+     a write here that snapshot is out of date, so drop it; they will fetch
+     fresh on the next visit instead of briefly showing yesterday's totals. */
+  function dropAggregateCaches() {
+    try {
+      localStorage.removeItem('the99.cache.shepherds');
+      localStorage.removeItem('the99.cache.dashboard');
+    } catch (e) { /* ignore */ }
+  }
+
   window.toggleCard = function (header) {
     var card = header.parentElement;
     var content = card.querySelector('.card-content');
@@ -594,6 +604,7 @@
     }).then(function () {
       // Only a reach-out that landed moves anyone back into the fold, so say
       // so plainly — otherwise an unchanged card looks like a failed save.
+      dropAggregateCaches();
       if (reached) {
         showToast('✔ Logged for ' + youth.Full_Name, '#5A7A5A');
       } else {
@@ -636,6 +647,7 @@
 
     api('updateNotes', { youthId: youth.Youth_ID, notes: newNotes }).then(function () {
       youth.Notes = newNotes;                    // keep the local copy in step
+      dropAggregateCaches();
       showToast('📝 Notes saved', '#5A7A5A');
       btn.textContent = 'Saved ✓';
       setTimeout(function () { btn.textContent = 'Save Notes'; btn.disabled = false; }, 2000);

@@ -132,7 +132,7 @@
 
     var ok = 0, warn = 0, late = 0;
     youth.forEach(function (y) {
-      var s = flockState(daysSince(y.Latest_Followup));
+      var s = flockState(daysFor(y));
       if (s === 'late') late++; else if (s === 'warn') warn++; else ok++;
     });
 
@@ -245,7 +245,7 @@
   function addScopeBlock(parent, label, list) {
     var ok = 0, warn = 0, late = 0;
     list.forEach(function (y) {
-      var st = flockState(daysSince(y.Latest_Followup));
+      var st = flockState(daysFor(y));
       if (st === 'late') late++; else if (st === 'warn') warn++; else ok++;
     });
     appendSection(parent, label + ' · ' + list.length);
@@ -471,7 +471,7 @@
       var g = gradeKey(y);
       if (!gMap[g]) gMap[g] = { ok: 0, total: 0 };
       gMap[g].total++;
-      var d = daysSince(y.Latest_Followup);
+      var d = daysFor(y);
       if (d !== null && d <= 30) gMap[g].ok++;
     });
 

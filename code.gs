@@ -212,7 +212,7 @@ function setup() {
 
 function doGet(e) {
   if (!e || !e.parameter || !e.parameter.action) {
-    return json({ ok: true, service: 'the99-api', version: 8 });
+    return json({ ok: true, service: 'the99-api', version: 10 });
   }
   return handle(e.parameter);
 }
@@ -517,7 +517,7 @@ function requireMainLeader(user) {
 
 function bootstrap(user) {
   return {
-    apiVersion: 8,
+    apiVersion: 10,
     user: {
       name: user.name,
       email: user.email,
@@ -745,6 +745,7 @@ function getDashboardData(user) {
       Latest_Followup: lf
         ? Utilities.formatDate(lf, Session.getScriptTimeZone(), 'yyyy-MM-dd')
         : null,
+      daysSince: calendarDaysAgo(lf),
       mine: owner.toLowerCase() === me,
       inClass: inScope(user.scope, gender, year)
     };
@@ -803,7 +804,7 @@ function faithfulShepherd() {
     per[name].total++;
 
     var lf = lastLog[id];
-    if (lf && Math.floor((now - lf.getTime()) / 86400000) <= FOLD_DAYS) per[name].ok++;
+    if (lf && calendarDaysAgo(lf) <= FOLD_DAYS) per[name].ok++;
   }
 
   var MIN_FLOCK = 3;
@@ -823,6 +824,38 @@ function faithfulShepherd() {
   return best;
 }
 
+/** Which of the three states a youth is in, from days since last contact. */
+function flockBucket(days) {
+  if (days === null || days === undefined || days > WANDER_DAYS) return 'late';
+  if (days > FOLD_DAYS) return 'warn';
+  return 'ok';
+}
+
+/**
+ * Years 4 and 5 are one batch and year 6 stands alone, exactly as the class
+ * scopes and the dashboard's grade leaderboard group them. A blank or
+ * non-numeric year is '?', never silently dropped, so the totals still add up.
+ */
+function yearBatch(v) {
+  var n = Number(v);
+  if (v === '' || v == null || isNaN(n)) return '?';
+  n = Math.round(n);
+  return (n === 4 || n === 5) ? '4-5' : String(n);
+}
+
+/** [{year, gender, days}] -> one {year, gender, ok, warn, late} per class. */
+function tallyByClass(list) {
+  var cells = {};
+  list.forEach(function (r) {
+    var year = yearBatch(r.year);
+    var gender = String(r.gender == null ? '' : r.gender).trim() || 'Unknown';
+    var key = year + '|' + gender;
+    var c = cells[key] || (cells[key] = { year: year, gender: gender, ok: 0, warn: 0, late: 0 });
+    c[flockBucket(r.days)]++;
+  });
+  return Object.keys(cells).map(function (k) { return cells[k]; });
+}
+
 /** The shepherds ranking. The ministry leader only. */
 function getShepherds(user) {
   requireMainLeader(user);
@@ -831,6 +864,7 @@ function getShepherds(user) {
   var lastLog = lastFollowupByYouth();
   var now = Date.now();
   var per = {};
+  var classRows = [];
 
   for (var r = 0; r < t.rows.length; r++) {
     var row = t.rows[r];
@@ -840,10 +874,11 @@ function getShepherds(user) {
     if (!per[name]) per[name] = { servant: name, ok: 0, warn: 0, late: 0, logs: 0 };
 
     var lf = lastLog[id];
-    var days = lf ? Math.floor((now - lf.getTime()) / 86400000) : null;
-    if (days === null || days > WANDER_DAYS) per[name].late++;
-    else if (days > FOLD_DAYS) per[name].warn++;
-    else per[name].ok++;
+    var days = calendarDaysAgo(lf);
+    per[name][flockBucket(days)]++;
+
+    // Every youth, assigned or not, so the classes add up to the overall flock.
+    classRows.push({ year: row[t.index.Year], gender: row[t.index.Gender], days: days });
   }
 
   var tl = cachedTable(SHEETS.logs);
@@ -859,7 +894,7 @@ function getShepherds(user) {
     var ta = a.ok + a.warn + a.late, tb = b.ok + b.warn + b.late;
     return (tb ? b.ok / tb : 0) - (ta ? a.ok / ta : 0);
   });
-  return { servants: list };
+  return { servants: list, classes: tallyByClass(classRows) };
 }
 
 // ===========================================================================
@@ -877,6 +912,7 @@ function youthObject(t, row, lastLog) {
   obj.Latest_Followup = fromLog
     ? Utilities.formatDate(fromLog, Session.getScriptTimeZone(), 'yyyy-MM-dd')
     : null;
+  obj.daysSince = calendarDaysAgo(fromLog);     // the number the pages must use
 
   obj.Year = normYear(obj.Year);
   return obj;
@@ -1086,6 +1122,23 @@ function normYear(v) {
   var n = Number(v);
   if (!isNaN(n) && isFinite(n)) return String(Math.round(n));
   return String(v).trim();
+}
+
+/**
+ * Whole calendar days between a date and today, in the script's timezone.
+ *
+ * This is THE definition of "days since last contact". It used to be computed
+ * in two places — here from the real timestamp, and in the browser from the
+ * yyyy-MM-dd string (parsed as UTC midnight) — and the two disagreed by a day
+ * right at the 30- and 60-day boundaries, so Shepherds and All Youths showed
+ * different totals. Now the server computes it once and every page uses it.
+ */
+function calendarDaysAgo(d) {
+  if (!d) return null;
+  var now = new Date();
+  var a = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  var b = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((b - a) / 86400000);        // round: DST can make a day 23h
 }
 
 /** Handles real Dates, spreadsheet serial numbers and date strings alike. */

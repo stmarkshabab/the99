@@ -8,7 +8,7 @@
 
 /* Build marker. Must match the backend's apiVersion (code.gs). Check in the
    console with THE99_BUILD; the backend's is at the /exec URL's "version". */
-var THE99_BUILD = 11;
+var THE99_BUILD = 13;
 window.THE99_BUILD = THE99_BUILD;
 
 var CFG = window.APP_CONFIG || {};
@@ -364,8 +364,8 @@ function requireServant(opts) {
             'to sign in again on every page.\n\n' +
             'In the Apps Script editor: paste the current code.gs, then\n' +
             'Deploy > Manage deployments > edit > Version: New version > Deploy.' +
-            (boot.apiVersion ? '\n\nBackend reports version ' + boot.apiVersion + ', expected 8.'
-                             : '\n\nBackend reports no version, expected 8.'));
+            (boot.apiVersion ? '\n\nBackend reports version ' + boot.apiVersion + ', expected 10.'
+                             : '\n\nBackend reports no version, expected 10.'));
           return;
         }
 
@@ -486,11 +486,22 @@ function cleanPhone(phone) {
   return digits;
 }
 
+/* Calendar days from a yyyy-MM-dd string to today. Parsed as LOCAL midnight on
+   purpose: `new Date('2026-08-29')` is UTC midnight, which from Cairo is 3am
+   the day before — the off-by-one that made two pages disagree at day 30. */
 function daysSince(date) {
-  if (!date) return null;
-  var d = new Date(date);
-  if (isNaN(d.getTime())) return null;
-  return Math.floor((new Date() - d) / 86400000);
+  var p = parseSheetDate(date);
+  if (!p) return null;
+  var now = new Date();
+  var a = new Date(p.y, p.m - 1, p.d);
+  var b = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((b - a) / 86400000);
+}
+
+/** The server's figure when it sent one, so every page agrees with Shepherds. */
+function daysFor(youth) {
+  if (youth && typeof youth.daysSince === 'number') return youth.daysSince;
+  return daysSince(youth && youth.Latest_Followup);
 }
 
 function formatDate(date) {

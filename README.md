@@ -69,6 +69,15 @@ no `Servant_Name`. Tapping it lists them. Assigning is done in the sheet —
 fill in `Servant_Name` and the youth moves to that servant's flock within a
 minute.
 
+Below the overall figures, **Flock by Class** gives In the Fold / Wandering /
+Lost Sheep for every year and gender: a subtotal per year with its genders
+beneath, then each gender across all years, then everyone. Years 4 and 5 are
+one row (as in the class scopes), year 6 has its own, and a youth with no year
+set appears as *Year not set* rather than vanishing. It counts every youth,
+assigned or not, so the *Everyone* row always equals the Overall Flock cards
+above it. It comes with the `shepherds` request, so it is leader-only on the
+server, not just hidden in the page.
+
 **Years 4 and 5 are one batch** — a Scope of `Male 4` or `Male 5` both cover
 years 4 *and* 5. Year 6 is deliberately left out of that batching while those
 youths await a decision on graduating, so no class sweeps them up.
@@ -327,4 +336,10 @@ If you change anything in `assets/`, **bump `VERSION` in `sw.js`**, or phones
 will keep serving the cached copy.
 - **Thresholds** (In the Fold ≤ 30 days, Wandering 31–60, Lost Sheep over 60)
   are set once, in `code.gs`. The pages read them on sign-in.
+- **"Days since last contact" is counted once, on the server**, as whole
+  calendar days in Cairo time, and sent with each youth as `daysSince`. Every
+  page uses that number, so All Youths, My Class, the dashboard and Shepherds
+  always agree. (They used to disagree by one youth or two: the browser was
+  recomputing it from a date string parsed as UTC midnight, which flips a youth
+  sitting exactly on day 30 or 60.)
 - **After changing `sw.js`**, bump `VERSION` so phones pick up the new files.

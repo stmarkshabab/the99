@@ -68,6 +68,85 @@
     });
   });
 
+  /* ── FLOCK BY CLASS ─────────────────────────────────────────────────────
+     Fold / Wandering / Lost for every year and gender. Each year gets a
+     subtotal row with its genders beneath it, and the footer gives each gender
+     across all years and then everyone, which must equal the Overall Flock
+     figures above it — a built-in cross-check. */
+
+  function classLabel(y) {
+    return y === '4-5' ? 'Years 4 & 5' : y === '?' ? 'Year not set' : 'Year ' + y;
+  }
+  function yearOrder(y)   { return y === '?' ? 99 : y === '4-5' ? 4 : Number(y); }
+  function genderOrder(g) { return g === 'Female' ? 0 : g === 'Male' ? 1 : 2; }
+
+  function sumOf(list) {
+    return list.reduce(function (a, c) {
+      a.ok += c.ok; a.warn += c.warn; a.late += c.late; return a;
+    }, { ok: 0, warn: 0, late: 0 });
+  }
+
+  function classBar(c) {
+    var t = c.ok + c.warn + c.late;
+    if (!t) return '';
+    return '<div class="cls-bar" aria-hidden="true">' +
+      (c.ok   ? '<span class="cls-seg cls-ok"   style="flex:' + c.ok   + '"></span>' : '') +
+      (c.warn ? '<span class="cls-seg cls-warn" style="flex:' + c.warn + '"></span>' : '') +
+      (c.late ? '<span class="cls-seg cls-late" style="flex:' + c.late + '"></span>' : '') +
+      '</div>';
+  }
+
+  function classNums(c) {
+    return '<td class="num n-ok">'   + c.ok   + '</td>' +
+           '<td class="num n-warn">' + c.warn + '</td>' +
+           '<td class="num n-late">' + c.late + '</td>' +
+           '<td class="num">' + (c.ok + c.warn + c.late) + '</td>';
+  }
+
+  function buildClassTable(classes) {
+    var byYear = {};
+    classes.forEach(function (c) { (byYear[c.year] = byYear[c.year] || []).push(c); });
+
+    var body = '';
+    Object.keys(byYear).sort(function (a, b) { return yearOrder(a) - yearOrder(b); })
+      .forEach(function (y) {
+        var cells = byYear[y].slice().sort(function (a, b) {
+          return genderOrder(a.gender) - genderOrder(b.gender);
+        });
+        var sum = sumOf(cells);
+        body += '<tr class="cls-year"><td class="name-cell"><div class="cls-label">' +
+                escHtml(classLabel(y)) + '</div>' + classBar(sum) + '</td>' + classNums(sum) + '</tr>';
+        cells.forEach(function (c) {
+          body += '<tr class="cls-sub"><td class="name-cell"><div class="cls-label">' +
+                  escHtml(c.gender) + '</div>' + classBar(c) + '</td>' + classNums(c) + '</tr>';
+        });
+      });
+
+    var byGender = {};
+    classes.forEach(function (c) { (byGender[c.gender] = byGender[c.gender] || []).push(c); });
+    var foot = '';
+    Object.keys(byGender).sort(function (a, b) { return genderOrder(a) - genderOrder(b); })
+      .forEach(function (g) {
+        foot += '<tr class="cls-total"><td class="name-cell">All ' + escHtml(g.toLowerCase()) +
+                '</td>' + classNums(sumOf(byGender[g])) + '</tr>';
+      });
+    foot += '<tr class="cls-total cls-everyone"><td class="name-cell">Everyone</td>' +
+            classNums(sumOf(classes)) + '</tr>';
+
+    var card = el('div', 'chart-card');
+    card.innerHTML =
+      '<div class="chart-header">' +
+        '<div class="chart-title">Flock by Class</div>' +
+        '<div class="chart-subtitle">In the Fold · Wandering · Lost Sheep, by year and gender</div>' +
+      '</div>' +
+      '<div style="overflow-x:auto"><table class="servant-table cls-table">' +
+        '<thead><tr><th>Class</th>' +
+          '<th class="num-h">Fold</th><th class="num-h">Wander</th>' +
+          '<th class="num-h">Lost</th><th class="num-h">Total</th></tr></thead>' +
+        '<tbody>' + body + foot + '</tbody></table></div>';
+    return card;
+  }
+
   function buildPage(data) {
     var main = document.getElementById('main');
     var servants = data.servants || [];
@@ -100,6 +179,13 @@
                    statCard('dark', totalLogs,  'Reach-Outs') +
                    statCard(unassignedCount ? 'late' : 'dark', unassignedCount, 'Unassigned');
     main.appendChild(g2);
+
+    /* ── BY CLASS ── */
+    // Absent when the backend predates it; the rest of the page is unaffected.
+    if (data.classes && data.classes.length) {
+      appendSection(main, 'Flock by Class');
+      main.appendChild(buildClassTable(data.classes));
+    }
 
     /* ── SEARCH + CARDS ── */
     appendSection(main, 'Shepherds — tap to open');
