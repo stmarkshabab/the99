@@ -290,6 +290,70 @@ Then remember: **bump `VERSION` in `sw.js` whenever a file in `assets/` changed*
 or phones keep the old copy. And give GitHub Pages a few minutes — its CDN
 caches for 10 minutes, so the site can lag behind the repo.
 
+## Push notifications — Monday nudge and birthday ping
+
+Free: Firebase Cloud Messaging on Firebase's no-card Spark plan, sent from
+this Apps Script on a timer. Opt-in per device.
+
+- **Monday 9:00** — each servant: who in their flock is wandering or lost, and
+  birthdays this week. A class leader with no flock of their own hears about
+  their class; the ministry leader gets the ministry totals. A servant with
+  nothing to report is not pinged.
+- **Daily 8:00** — a birthday-morning ping, only on days someone has one.
+- First names and counts only. No phone numbers or notes reach a lock screen.
+
+### Test mode (the default) — only you receive anything
+
+| Script property | Value |
+|---|---|
+| `FIREBASE_PROJECT_ID` | `the99-followup` |
+| `PUSH_MODE` | `test` |
+| `PUSH_TEST_EMAILS` | your sign-in email, e.g. `eng.monica.farah@gmail.com` |
+| `PUSH_TEST_AS` | *(optional)* a servant's name — your notifications are then written as *they* would receive them |
+
+In test mode the *Turn on notifications* card is shown **only** to the emails in
+`PUSH_TEST_EMAILS`, and the senders deliver **only** to those people's devices.
+Every test notification starts with `TEST`, and a week with nothing to say still
+sends you *"… would get no Monday nudge"* so you can see silence is working.
+
+### One-time setup
+
+1. **Firebase**: <https://console.firebase.google.com> → *Add project* → choose
+   your existing Cloud project `the99-followup` → keep the free Spark plan,
+   Analytics off.
+2. **Web app**: Project settings → *Your apps* → Web `</>` → register "The 99"
+   (no Hosting). Copy `apiKey` and `appId` into `config.js` (`projectId` and
+   `messagingSenderId` are already filled in — check they match).
+3. **Push key**: Project settings → *Cloud Messaging* → *Web Push certificates*
+   → *Generate key pair*. Copy it into `VAPID_KEY` in `config.js`.
+4. **API**: Google Cloud console → APIs & Services → make sure *Firebase Cloud
+   Messaging API* is enabled.
+5. **Link the script**: Apps Script → Project Settings → *Google Cloud Platform
+   (GCP) Project* → *Change project* → `85459451769`.
+6. **Script properties**: the four in the table above.
+7. Paste `code.gs` **and** `appsscript.json`, run `setup` and approve the two
+   new permissions (send via Firebase, manage triggers). Check the *Push* lines.
+8. Run `installPushTriggers` once. Then deploy a New version and push.
+
+If `setup` reports **FCM sign-in refused**: Cloud console → IAM → Service
+accounts → create one with the role *Firebase Cloud Messaging API Admin* → Keys
+→ JSON, and paste the whole file into a script property `FCM_SERVICE_ACCOUNT`.
+Treat it like a password.
+
+### Testing
+
+On your phone (iPhone: from the Home Screen icon), open the app, tap
+**Turn on**, then **Send me a test**. Then in the Apps Script editor run
+`sendMondayNudge` and `sendBirthdayPing` — in test mode they only reach you.
+
+### Going live
+
+Set `PUSH_MODE` to `live`. The card then appears for every servant; nothing is
+sent to anyone until they turn it on. `off` stops all sending immediately.
+
+Devices are kept in a **Devices** tab. Phones that uninstall or revoke
+permission are removed automatically the next time a send reaches them.
+
 ## Birthdays
 
 `Birth_Date` is filled in for about 79% of the flock — roughly six birthdays a

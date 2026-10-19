@@ -3,7 +3,7 @@
    never cached: every API call goes to the network so the sheet stays the
    single source of truth and nobody acts on a stale flock. */
 
-var VERSION = 'the99-v13';
+var VERSION = 'the99-v14';
 var SHELL = [
   'index.html',
   'shepherds.html',
@@ -72,4 +72,51 @@ self.addEventListener('fetch', function (e) {
       return hit || network;
     })
   );
+});
+
+/* ── PUSH ────────────────────────────────────────────────────────────────
+   The server sends data-only messages through Firebase, so this is what
+   turns them into a notification. Every push must show one: iOS withdraws
+   permission from apps that receive pushes silently. */
+
+function notificationFromPush(raw) {
+  var p = raw || {};
+  var d = p.data || {};
+  var n = p.notification || {};
+  return {
+    title: d.title || n.title || 'The 99',
+    body: d.body || n.body || '',
+    url: d.url || (p.fcmOptions && p.fcmOptions.link) || 'index.html',
+    tag: d.tag || 'the99'
+  };
+}
+
+self.addEventListener('push', function (e) {
+  var raw = {};
+  try { raw = e.data ? e.data.json() : {}; }
+  catch (err) { raw = { data: { body: e.data ? e.data.text() : '' } }; }
+  var n = notificationFromPush(raw);
+  e.waitUntil(self.registration.showNotification(n.title, {
+    body: n.body,
+    tag: n.tag,
+    renotify: true,
+    icon: 'assets/icons/icon-192.png',
+    badge: 'assets/icons/icon-192.png',
+    data: { url: n.url }
+  }));
+});
+
+self.addEventListener('notificationclick', function (e) {
+  e.notification.close();
+  var target = new URL((e.notification.data && e.notification.data.url) || 'index.html',
+                       self.registration.scope).href;
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function (list) {
+    for (var i = 0; i < list.length; i++) {
+      var c = list[i];
+      if (c.url.indexOf(self.registration.scope) === 0 && 'focus' in c) {
+        return c.focus().then(function (w) { return (w && 'navigate' in w) ? w.navigate(target) : w; });
+      }
+    }
+    return self.clients.openWindow(target);
+  }));
 });

@@ -62,6 +62,8 @@
     <ul class="birthday-list" id="birthdayList"></ul>
   </div>
 
+  <div class="push-card" id="pushCard" hidden></div>
+
   <div class="summary" id="summary"></div>
 
   <div class="lost-banner" id="lostBanner" hidden>
@@ -133,6 +135,7 @@
 
   requireServant(gate).then(function (ctx) {
     var role = ctx.boot.user.role || (ctx.boot.user.isLeader ? 'leader' : 'servant');
+    mountPushCard(ctx.boot);
     var head = document.querySelector('.header-servant');
 
     if (VIEW === 'all') {

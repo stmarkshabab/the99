@@ -199,6 +199,40 @@ function setup() {
     bad('Servants sheet', e.message);
   }
 
+  // 5. Push notifications — optional, so missing settings are notes, not failures.
+  try {
+    var ps = pushSettings();
+    if (!ps.projectId) {
+      note('Push', 'off — FIREBASE_PROJECT_ID not set');
+    } else {
+      note('Push mode', ps.mode + (ps.mode === 'test'
+        ? ' — only ' + (ps.testEmails.join(', ') || 'NOBODY (set PUSH_TEST_EMAILS)') +
+          (ps.testAs ? ', written as ' + ps.testAs : '')
+        : ''));
+      if (ps.mode === 'test' && ps.testAs && !servantByName(ps.testAs)) {
+        bad('PUSH_TEST_AS', '"' + ps.testAs + '" is not a servant with an email');
+      }
+      // A dry run against a fake device: FCM answering "bad token" proves the
+      // sign-in itself works; 401/403 means it does not.
+      var probe = fcmSend('setup-probe-not-a-real-device-token', { title: 'probe', body: 'probe' }, ps, true);
+      if (probe.auth) {
+        bad('FCM sign-in', 'refused (' + probe.code + '). Check the Apps Script is linked to the ' +
+            'Cloud project, or set FCM_SERVICE_ACCOUNT. ' + probe.text.slice(0, 120));
+      } else if (probe.code === 404 && !/registration token|UNREGISTERED/i.test(probe.text)) {
+        bad('FCM project', 'not found — check FIREBASE_PROJECT_ID (' + ps.projectId + ')');
+      } else {
+        ok('FCM sign-in', 'accepted' + (prop('FCM_SERVICE_ACCOUNT') ? ' (service account)' : ' (script sign-in)'));
+      }
+      ok('Registered devices', String(readDevices().length));
+      var trig = ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); });
+      var have = ['sendMondayNudge', 'sendBirthdayPing'].filter(function (h) { return trig.indexOf(h) !== -1; });
+      if (have.length === 2) ok('Push schedule', 'Monday 9:00 nudge, daily 8:00 birthdays');
+      else note('Push schedule', 'not installed — run installPushTriggers once');
+    }
+  } catch (e) {
+    bad('Push', e.message);
+  }
+
   var out = '\n' + report.join('\n') +
     '\n\n' + (failed ? '>>> Something needs fixing — see the FAIL lines above.'
                      : '>>> All good. Deploy > Manage deployments > edit > New version > Deploy.');
@@ -212,7 +246,7 @@ function setup() {
 
 function doGet(e) {
   if (!e || !e.parameter || !e.parameter.action) {
-    return json({ ok: true, service: 'the99-api', version: 10 });
+    return json({ ok: true, service: 'the99-api', version: 11 });
   }
   return handle(e.parameter);
 }
@@ -241,6 +275,9 @@ function handle(req) {
       case 'updateNotes': data = updateNotes(user, payload); break;
       case 'dashboard':   data = getDashboardData(user); break;
       case 'shepherds':   data = getShepherds(user); break;
+      case 'registerPush':   data = registerPush(user, payload); break;
+      case 'unregisterPush': data = unregisterPush(user, payload); break;
+      case 'sendTestPush':   data = sendTestPush(user); break;
       default:
         throw httpError(400, 'Unknown action: ' + req.action);
     }
@@ -517,7 +554,7 @@ function requireMainLeader(user) {
 
 function bootstrap(user) {
   return {
-    apiVersion: 10,
+    apiVersion: 11,
     user: {
       name: user.name,
       email: user.email,
@@ -530,6 +567,10 @@ function bootstrap(user) {
     },
     followupTypes: FOLLOWUP_TYPES,
     thresholds: { fold: FOLD_DAYS, wander: WANDER_DAYS },
+    push: (function () {
+      var s = pushSettings();
+      return { available: pushAvailableFor(user.email, s), mode: s.mode };
+    })(),
     serverTime: new Date().toISOString()
   };
 }
@@ -895,6 +936,415 @@ function getShepherds(user) {
     return (tb ? b.ok / tb : 0) - (ta ? a.ok / ta : 0);
   });
   return { servants: list, classes: tallyByClass(classRows) };
+}
+
+// ===========================================================================
+// Push notifications (Firebase Cloud Messaging) — Monday nudge, birthday ping
+// ===========================================================================
+//
+// Script properties:
+//   FIREBASE_PROJECT_ID   e.g. the99-followup. Without it, push is simply off.
+//   PUSH_MODE             test (default) | live | off
+//   PUSH_TEST_EMAILS      comma-separated. In test mode ONLY these people see
+//                         the "Turn on notifications" card, and ONLY their
+//                         devices are ever sent anything.
+//   PUSH_TEST_AS          optional servant name. In test mode your notification
+//                         is written as if you were that servant, so you can see
+//                         exactly what they would receive.
+//   FCM_SERVICE_ACCOUNT   optional JSON key, only if the script's own sign-in
+//                         is refused by FCM (setup tells you).
+//
+// Run installPushTriggers() once from the editor to schedule both senders.
+
+var DEVICES_SHEET = 'Devices';
+var DEVICE_HEADERS = ['Email', 'Token', 'Platform', 'Added'];
+var WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+function pushSettings() {
+  var mode = String(prop('PUSH_MODE') || 'test').trim().toLowerCase();
+  if (['off', 'test', 'live'].indexOf(mode) === -1) mode = 'test';
+  return {
+    mode: mode,
+    projectId: String(prop('FIREBASE_PROJECT_ID') || '').trim(),
+    testEmails: String(prop('PUSH_TEST_EMAILS') || '').split(',')
+      .map(function (x) { return x.trim().toLowerCase(); }).filter(String),
+    testAs: String(prop('PUSH_TEST_AS') || '').trim()
+  };
+}
+
+/** May this person see the switch and register a device? */
+function pushAvailableFor(email, s) {
+  if (!s.projectId || s.mode === 'off') return false;
+  if (s.mode === 'live') return true;
+  return s.testEmails.indexOf(String(email || '').toLowerCase()) !== -1;
+}
+
+/** Which registered devices may be sent anything at all, in this mode. */
+function deliverableDevices(devices, s) {
+  if (!s.projectId || s.mode === 'off') return [];
+  if (s.mode === 'live') return devices;
+  return devices.filter(function (d) { return s.testEmails.indexOf(d.email) !== -1; });
+}
+
+// ── message content (pure: no sheet access, so it can be tested) ──────────
+
+function firstNameOf(full) { return String(full || '').trim().split(/\s+/)[0] || ''; }
+
+/** {y,m,d} birthday + {y,m,d} today -> days until the next one (0 = today). */
+function birthdayAway(b, today) {
+  if (!b || !b.m || !b.d) return null;
+  function occ(year) {
+    var d = new Date(year, b.m - 1, b.d);
+    if (d.getMonth() !== b.m - 1) d = new Date(year, b.m, 0);   // 29 Feb -> 28 Feb
+    return d;
+  }
+  var t = new Date(today.y, today.m - 1, today.d);
+  var next = occ(today.y);
+  if (next < t) next = occ(today.y + 1);
+  return { days: Math.round((next - t) / 86400000), weekday: WEEKDAY_SHORT[next.getDay()] };
+}
+
+function nameList(names, max) {
+  if (names.length <= max) {
+    return names.length > 1
+      ? names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1]
+      : names.join('');
+  }
+  return names.slice(0, max).join(', ') + ' and ' + (names.length - max) + ' more';
+}
+
+var KIND_URL = { flock: 'index.html', 'class': 'index.html?view=class', ministry: 'shepherds.html' };
+
+/**
+ * The Monday nudge. youths: [{first, days, birth:{y,m,d}}]. Returns null when
+ * there is genuinely nothing to say, so nobody is pinged for an empty week.
+ */
+function buildNudge(kind, youths, today, extra) {
+  var n = { ok: 0, warn: 0, late: 0 };
+  var bdays = [];
+  youths.forEach(function (y) {
+    n[flockBucket(y.days)]++;
+    var b = birthdayAway(y.birth, today);
+    if (b && b.days < 7) bdays.push({ first: y.first, days: b.days, weekday: b.weekday });
+  });
+  bdays.sort(function (a, b) { return a.days - b.days; });
+
+  if (kind === 'ministry') {
+    var parts = [n.ok + ' in the fold', n.warn + ' wandering', n.late + ' lost'];
+    if (extra && extra.unassigned) parts.push(extra.unassigned + ' without a servant');
+    var body = parts.join(' · ') + '.';
+    if (bdays.length) body += ' ' + bdays.length + ' birthday' + (bdays.length === 1 ? '' : 's') + ' this week.';
+    return { title: '🐑 The ministry this week', body: body, url: KIND_URL.ministry, tag: 'nudge' };
+  }
+
+  if (!n.warn && !n.late && !bdays.length) return null;
+
+  var bits = [];
+  if (n.late) bits.push(n.late + ' lost sheep');
+  if (n.warn) bits.push(n.warn + ' wandering');
+  var line = bits.length ? bits.join(' · ') + '.' : 'Everyone is in the fold 🌿';
+  if (bdays.length) {
+    line += ' Birthdays: ' + nameList(bdays.map(function (b) {
+      return b.first + ' (' + (b.days === 0 ? 'today' : b.weekday) + ')';
+    }), 3) + '.';
+  }
+  return {
+    title: kind === 'class' ? '🐑 Your class this week' : '🐑 Your flock this week',
+    body: line, url: KIND_URL[kind] || 'index.html', tag: 'nudge'
+  };
+}
+
+/** The birthday-morning ping. Null when nobody has a birthday today. */
+function buildBirthdayPing(kind, youths, today) {
+  var names = youths.filter(function (y) {
+    var b = birthdayAway(y.birth, today);
+    return b && b.days === 0;
+  }).map(function (y) { return y.first; });
+  if (!names.length) return null;
+
+  var where = kind === 'ministry' ? ' across the ministry' : '';
+  var url = kind === 'ministry' ? 'index.html?view=all' : (KIND_URL[kind] || 'index.html');
+  if (names.length === 1) {
+    return { title: '🎂 ' + names[0] + "'s birthday is today" + where,
+             body: 'Tap to send a wish.', url: url, tag: 'birthday' };
+  }
+  return { title: '🎂 ' + names.length + ' birthdays today' + where,
+           body: nameList(names, 3) + ' — tap to send a wish.', url: url, tag: 'birthday' };
+}
+
+// ── devices ────────────────────────────────────────────────────────────────
+
+function devicesSheet() {
+  var ss = spreadsheet();
+  var sh = ss.getSheetByName(DEVICES_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(DEVICES_SHEET);
+    sh.getRange(1, 1, 1, DEVICE_HEADERS.length).setValues([DEVICE_HEADERS]).setFontWeight('bold');
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+function readDevices() {
+  var sh = devicesSheet();
+  var last = sh.getLastRow();
+  if (last < 2) return [];
+  return sh.getRange(2, 1, last - 1, DEVICE_HEADERS.length).getValues()
+    .map(function (r, i) {
+      return { email: String(r[0] || '').trim().toLowerCase(), token: String(r[1] || '').trim(),
+               platform: String(r[2] || ''), row: i + 2 };
+    })
+    .filter(function (d) { return d.email && d.token; });
+}
+
+function removeDeviceTokens(tokens) {
+  if (!tokens.length) return 0;
+  var sh = devicesSheet();
+  var rows = readDevices().filter(function (d) { return tokens.indexOf(d.token) !== -1; })
+                          .map(function (d) { return d.row; })
+                          .sort(function (a, b) { return b - a; });
+  rows.forEach(function (r) { sh.deleteRow(r); });
+  return rows.length;
+}
+
+function registerPush(user, payload) {
+  var s = pushSettings();
+  if (!pushAvailableFor(user.email, s)) throw httpError(403, 'Notifications are not switched on for you yet.');
+  var token = String(payload.token || '').trim();
+  if (token.length < 20 || token.length > 4096 || /\s/.test(token)) throw httpError(400, 'That device token is not valid.');
+  var platform = String(payload.platform || '').slice(0, 60);
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) throw httpError(503, 'The sheet is busy — please try again.');
+  try {
+    var sh = devicesSheet();
+    var existing = readDevices().filter(function (d) { return d.token === token; });
+    if (existing.length) {
+      // Same phone, possibly signed in as someone else now: it follows the person.
+      sh.getRange(existing[0].row, 1, 1, 3).setValues([[user.email, token, platform]]);
+    } else {
+      sh.appendRow([user.email, token, platform, new Date()]);
+    }
+    return { registered: true, mode: s.mode };
+  } finally { lock.releaseLock(); }
+}
+
+function unregisterPush(user, payload) {
+  var token = String(payload.token || '').trim();
+  if (!token) return { removed: 0 };
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) throw httpError(503, 'The sheet is busy — please try again.');
+  try {
+    var mine = readDevices().filter(function (d) { return d.token === token && d.email === user.email; })
+                            .map(function (d) { return d.token; });
+    return { removed: removeDeviceTokens(mine) };
+  } finally { lock.releaseLock(); }
+}
+
+/** "Send me a test" — only ever to the caller's own devices. */
+function sendTestPush(user) {
+  var s = pushSettings();
+  if (!pushAvailableFor(user.email, s)) throw httpError(403, 'Notifications are not switched on for you yet.');
+  var mine = readDevices().filter(function (d) { return d.email === user.email; });
+  if (!mine.length) throw httpError(400, 'This device is not registered yet — turn notifications on first.');
+  var res = deliver(mine, { title: '🐑 The 99 — test', body: 'Notifications are working. You can close this.',
+                            url: 'index.html', tag: 'test' }, s);
+  if (res.authError) throw httpError(500, 'Firebase refused the sign-in: ' + res.authError);
+  return { sent: res.sent, removed: res.removed };
+}
+
+// ── sending ────────────────────────────────────────────────────────────────
+
+function b64url(s) {
+  return Utilities.base64EncodeWebSafe(Utilities.newBlob(s).getBytes()).replace(/=+$/, '');
+}
+
+/** An access token for FCM: the script's own sign-in, or a service account. */
+function fcmAccessToken() {
+  var sa = prop('FCM_SERVICE_ACCOUNT');
+  if (!sa) return ScriptApp.getOAuthToken();
+
+  var cache = CacheService.getScriptCache();
+  var hit = cache.get('fcm_sa_token');
+  if (hit) return hit;
+
+  var key = JSON.parse(sa);
+  var now = Math.floor(Date.now() / 1000);
+  var head = b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+  var claim = b64url(JSON.stringify({
+    iss: key.client_email, scope: 'https://www.googleapis.com/auth/firebase.messaging',
+    aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600
+  }));
+  var sig = Utilities.base64EncodeWebSafe(
+    Utilities.computeRsaSha256Signature(head + '.' + claim, key.private_key)).replace(/=+$/, '');
+  var res = UrlFetchApp.fetch('https://oauth2.googleapis.com/token', {
+    method: 'post', muteHttpExceptions: true,
+    payload: { grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion: head + '.' + claim + '.' + sig }
+  });
+  if (res.getResponseCode() !== 200) throw new Error('Service-account sign-in failed: ' + res.getContentText().slice(0, 200));
+  var token = JSON.parse(res.getContentText()).access_token;
+  cache.put('fcm_sa_token', token, 3000);
+  return token;
+}
+
+/** One message to one device. Data-only, so our service worker draws it. */
+function fcmSend(deviceToken, msg, s, validateOnly) {
+  var res = UrlFetchApp.fetch(
+    'https://fcm.googleapis.com/v1/projects/' + encodeURIComponent(s.projectId) + '/messages:send', {
+      method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+      headers: { Authorization: 'Bearer ' + fcmAccessToken() },
+      payload: JSON.stringify({
+        validate_only: !!validateOnly,
+        message: {
+          token: deviceToken,
+          data: { title: String(msg.title), body: String(msg.body), url: String(msg.url || 'index.html'),
+                  tag: String(msg.tag || 'the99') },
+          webpush: { headers: { TTL: '43200', Urgency: 'normal' } }
+        }
+      })
+    });
+  var code = res.getResponseCode();
+  if (code === 200) return { ok: true, code: code };
+  var text = res.getContentText();
+  return {
+    ok: false, code: code, text: text.slice(0, 300),
+    auth: code === 401 || code === 403,
+    // Only a token FCM says is gone is removed — never on a payload or auth error.
+    dead: code === 404 || /UNREGISTERED/.test(text) ||
+          (code === 400 && /registration token/i.test(text))
+  };
+}
+
+function deliver(devices, msg, s) {
+  var out = { sent: 0, removed: 0, failed: 0, authError: '' };
+  var dead = [];
+  for (var i = 0; i < devices.length; i++) {
+    var r = fcmSend(devices[i].token, msg, s);
+    if (r.ok) { out.sent++; continue; }
+    if (r.auth) { out.authError = r.code + ' ' + r.text; break; }   // no point trying the rest
+    if (r.dead) dead.push(devices[i].token); else out.failed++;
+  }
+  out.removed = removeDeviceTokens(dead);
+  return out;
+}
+
+/** Everything the senders need about every youth, in one pass. */
+function youthSnapshot() {
+  var t = cachedTable(SHEETS.youths);
+  var lastLog = lastFollowupByYouth();
+  var out = [];
+  for (var r = 0; r < t.rows.length; r++) {
+    var row = t.rows[r];
+    var id = String(row[t.index.Youth_ID] || '').trim();
+    if (!id) continue;
+    var bd = toDate(row[t.index.Birth_Date]);
+    out.push({
+      first: firstNameOf(row[t.index.Full_Name]),
+      servant: String(row[t.index.Servant_Name] || '').trim().toLowerCase(),
+      gender: plain(row[t.index.Gender]),
+      year: normYear(row[t.index.Year]),
+      days: calendarDaysAgo(lastLog[id] || null),
+      birth: bd ? { y: bd.getFullYear(), m: bd.getMonth() + 1, d: bd.getDate() } : null
+    });
+  }
+  return out;
+}
+
+/** Whose youths a person hears about: their flock, their class, or everyone. */
+function youthsFor(person, all) {
+  if (person.role === 'leader') return { kind: 'ministry', list: all };
+  var me = person.name.toLowerCase();
+  var own = all.filter(function (y) { return y.servant === me; });
+  if (person.role === 'class' && !own.length) {
+    return { kind: 'class', list: all.filter(function (y) { return inScope(person.scope, y.gender, y.year); }) };
+  }
+  return { kind: 'flock', list: own };
+}
+
+function servantByName(name) {
+  var t = cachedTable(SHEETS.servants);
+  var iMail = pick(t.index, ['Mail', 'Email', 'E-mail']);
+  var iName = pick(t.index, ['Full_Name', 'Full Name', 'Name']);
+  var want = String(name || '').trim().toLowerCase();
+  for (var r = 0; r < t.rows.length; r++) {
+    if (String(t.rows[r][iName] || '').trim().toLowerCase() !== want) continue;
+    var mail = String(t.rows[r][iMail] || '').trim().toLowerCase();
+    var person = mail ? findServant(mail) : null;
+    if (person) { person.email = mail; return person; }
+  }
+  return null;
+}
+
+function runPush(which) {
+  var s = pushSettings();
+  if (s.mode === 'off') return logPush(which, 'PUSH_MODE is off — nothing sent.');
+  if (!s.projectId) return logPush(which, 'FIREBASE_PROJECT_ID is not set — nothing sent.');
+
+  var byEmail = {};
+  deliverableDevices(readDevices(), s).forEach(function (d) {
+    (byEmail[d.email] = byEmail[d.email] || []).push(d);
+  });
+  var emails = Object.keys(byEmail);
+  if (!emails.length) return logPush(which, 'No devices to send to (mode: ' + s.mode + ').');
+
+  var all = youthSnapshot();
+  var now = new Date();
+  var today = { y: now.getFullYear(), m: now.getMonth() + 1, d: now.getDate() };
+  var unassigned = all.filter(function (y) { return !y.servant; }).length;
+  var stand = (s.mode === 'test' && s.testAs) ? servantByName(s.testAs) : null;
+
+  var sent = 0, quiet = 0, removed = 0, failed = 0, authError = '';
+  for (var i = 0; i < emails.length && !authError; i++) {
+    var person = stand || findServant(emails[i]);
+    if (!person) { quiet++; continue; }
+    var scope = youthsFor(person, all);
+    var msg = which === 'nudge'
+      ? buildNudge(scope.kind, scope.list, today, { unassigned: unassigned })
+      : buildBirthdayPing(scope.kind, scope.list, today);
+
+    if (s.mode === 'test') {
+      var who = stand ? ' · as ' + stand.name : '';
+      // In test mode an empty week still sends, so you can see that it WOULD be silent.
+      msg = msg
+        ? { title: 'TEST' + who + ' — ' + msg.title, body: msg.body, url: msg.url, tag: msg.tag }
+        : { title: 'TEST' + who + ' — nothing to send',
+            body: (stand ? stand.name : 'You') + ' would get no ' +
+                  (which === 'nudge' ? 'Monday nudge' : 'birthday ping') + ' today.',
+            url: 'index.html', tag: which };
+    }
+    if (!msg) { quiet++; continue; }
+
+    var r = deliver(byEmail[emails[i]], msg, s);
+    sent += r.sent; removed += r.removed; failed += r.failed;
+    if (r.authError) authError = r.authError;
+  }
+  return logPush(which, 'mode ' + s.mode + ': sent ' + sent + ', nothing-to-say ' + quiet +
+                 ', stale devices removed ' + removed + ', failed ' + failed +
+                 (authError ? ' — STOPPED, Firebase refused the sign-in: ' + authError : ''));
+}
+
+function logPush(which, text) {
+  var line = '[push ' + which + '] ' + text;
+  Logger.log(line);
+  return line;
+}
+
+/** Time-trigger handlers. Safe to run by hand from the editor in test mode. */
+function sendMondayNudge() { return runPush('nudge'); }
+function sendBirthdayPing() { return runPush('birthday'); }
+
+/** Run once from the editor: Monday 9:00 nudge, daily 8:00 birthdays (Cairo). */
+function installPushTriggers() {
+  var handlers = ['sendMondayNudge', 'sendBirthdayPing'];
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (handlers.indexOf(t.getHandlerFunction()) !== -1) ScriptApp.deleteTrigger(t);
+  });
+  var tz = Session.getScriptTimeZone();
+  ScriptApp.newTrigger('sendMondayNudge').timeBased()
+    .onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(9).inTimezone(tz).create();
+  ScriptApp.newTrigger('sendBirthdayPing').timeBased()
+    .everyDays(1).atHour(8).inTimezone(tz).create();
+  Logger.log('Installed: Monday nudge at 9:00 and birthday ping daily at 8:00 (' + tz + ').');
 }
 
 // ===========================================================================

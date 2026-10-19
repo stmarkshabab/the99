@@ -8,7 +8,7 @@
 
 /* Build marker. Must match the backend's apiVersion (code.gs). Check in the
    console with THE99_BUILD; the backend's is at the /exec URL's "version". */
-var THE99_BUILD = 13;
+var THE99_BUILD = 14;
 window.THE99_BUILD = THE99_BUILD;
 
 var CFG = window.APP_CONFIG || {};
@@ -173,6 +173,17 @@ var Auth = {
   },
 
   signOut: function () {
+    // Best effort: a signed-out phone should stop getting this servant's
+    // notifications. Never let it hold up signing out for more than a moment.
+    var self = this, t = storedPushToken();
+    if (t && !this._pushReleased) {
+      this._pushReleased = true;
+      storePushToken('');
+      var done = function () { self.signOut(); };
+      Promise.race([api('unregisterPush', { token: t }).catch(function () {}),
+                    new Promise(function (r) { setTimeout(r, 2500); })]).then(done, done);
+      return;
+    }
     try { google.accounts.id.disableAutoSelect(); } catch (e) { /* not loaded */ }
     this.idToken = null;
     Session.clear();
@@ -364,8 +375,8 @@ function requireServant(opts) {
             'to sign in again on every page.\n\n' +
             'In the Apps Script editor: paste the current code.gs, then\n' +
             'Deploy > Manage deployments > edit > Version: New version > Deploy.' +
-            (boot.apiVersion ? '\n\nBackend reports version ' + boot.apiVersion + ', expected 10.'
-                             : '\n\nBackend reports no version, expected 10.'));
+            (boot.apiVersion ? '\n\nBackend reports version ' + boot.apiVersion + ', expected 11.'
+                             : '\n\nBackend reports no version, expected 11.'));
           return;
         }
 
@@ -658,6 +669,182 @@ function matchesQuery(youth, q) {
 
 /* ── PWA ────────────────────────────────────────────────────────────────── */
 
+/* ── PUSH NOTIFICATIONS ─────────────────────────────────────────────────── */
+/* Opt-in only. Firebase is loaded the first time someone taps "Turn on" (or
+   on later visits by someone who already has), so nobody else pays for it. */
+
+var FIREBASE_SDK = 'https://www.gstatic.com/firebasejs/12.4.0/';
+var PUSH_TOKEN_KEY = 'the99.pushToken';
+var PUSH_HIDE_KEY = 'the99.pushHidden';
+
+function pushConfigured() {
+  var f = CFG.FIREBASE || {};
+  function missing(v) { return !v || String(v).indexOf('PASTE_') === 0; }
+  return !missing(f.apiKey) && !missing(f.appId) && !missing(f.projectId) &&
+         !missing(f.messagingSenderId) && !missing(CFG.VAPID_KEY);
+}
+
+/** 'ok' | 'ios-install' | 'denied' | 'unsupported' */
+function pushSupport() {
+  if (!('serviceWorker' in navigator)) return 'unsupported';
+  // Apple only allows web push to apps installed on the Home Screen.
+  if (isIos() && !isStandalone()) return 'ios-install';
+  if (!('Notification' in window) || !('PushManager' in window)) return 'unsupported';
+  if (Notification.permission === 'denied') return 'denied';
+  return 'ok';
+}
+
+function storedPushToken() { try { return localStorage.getItem(PUSH_TOKEN_KEY) || ''; } catch (e) { return ''; } }
+function storePushToken(t) { try { t ? localStorage.setItem(PUSH_TOKEN_KEY, t) : localStorage.removeItem(PUSH_TOKEN_KEY); } catch (e) { /* ignore */ } }
+
+function pushPlatform() {
+  var ua = navigator.userAgent || '';
+  var kind = isIos() ? 'iPhone/iPad' : /Android/i.test(ua) ? 'Android' : 'Computer';
+  return kind + (isStandalone() ? ' · app' : ' · browser');
+}
+
+var messagingPromise = null;
+function loadMessaging() {
+  if (window.__the99Messaging) return window.__the99Messaging;   // test seam
+  if (!messagingPromise) {
+    messagingPromise = Promise.all([
+      import(FIREBASE_SDK + 'firebase-app.js'),
+      import(FIREBASE_SDK + 'firebase-messaging.js')
+    ]).then(function (m) {
+      var app = m[0].getApps().length ? m[0].getApps()[0] : m[0].initializeApp(CFG.FIREBASE);
+      return { messaging: m[1].getMessaging(app), getToken: m[1].getToken, deleteToken: m[1].deleteToken };
+    });
+  }
+  return messagingPromise;
+}
+
+function deviceToken(reg) {
+  return loadMessaging().then(function (fb) {
+    return fb.getToken(fb.messaging, { vapidKey: CFG.VAPID_KEY, serviceWorkerRegistration: reg });
+  });
+}
+
+/* Must be called straight from a tap: iOS refuses a permission request that is
+   not the direct result of one, so requestPermission comes before any await. */
+function enablePush() {
+  var ask = Notification.requestPermission();
+  return Promise.resolve(ask).then(function (p) {
+    if (p !== 'granted') throw new Error(p === 'denied' ? 'denied' : 'dismissed');
+    return navigator.serviceWorker.getRegistration();
+  }).then(function (reg) {
+    if (!reg) throw new Error(CFG.isLocal
+      ? 'Locally, open the page with ?sw=1 to test notifications.'
+      : 'The app is still starting — reload and try again.');
+    return deviceToken(reg);
+  }).then(function (token) {
+    if (!token) throw new Error('This browser did not issue a notification token.');
+    return api('registerPush', { token: token, platform: pushPlatform() }).then(function (r) {
+      storePushToken(token);
+      return r;
+    });
+  });
+}
+
+function disablePush() {
+  var token = storedPushToken();
+  storePushToken('');
+  var server = token ? api('unregisterPush', { token: token }).catch(function () {}) : Promise.resolve();
+  return server.then(function () {
+    return loadMessaging().then(function (fb) { return fb.deleteToken(fb.messaging); }).catch(function () {});
+  });
+}
+
+/* Tokens can be rotated by the browser; quietly re-register if it changed. */
+function refreshPushToken() {
+  if (!storedPushToken() || pushSupport() !== 'ok' || Notification.permission !== 'granted') return;
+  navigator.serviceWorker.getRegistration().then(function (reg) {
+    if (!reg) return;
+    return deviceToken(reg).then(function (token) {
+      if (token && token !== storedPushToken()) {
+        return api('registerPush', { token: token, platform: pushPlatform() }).then(function () { storePushToken(token); });
+      }
+    });
+  }).catch(function () { /* next visit will try again */ });
+}
+
+/** The card on the flock page. Shown only to people the server says may opt in. */
+function mountPushCard(boot) {
+  var card = document.getElementById('pushCard');
+  if (!card) return;
+  var info = boot.push || {};
+  if (!info.available || !pushConfigured()) { card.hidden = true; return; }
+
+  var test = info.mode === 'test'
+    ? '<div class="push-test">Test mode — only listed testers receive these.</div>' : '';
+  var hidden = false;
+  try { hidden = localStorage.getItem(PUSH_HIDE_KEY) === '1'; } catch (e) { /* ignore */ }
+
+  function draw(state, note) {
+    var on = !!storedPushToken() && pushSupport() === 'ok' && Notification.permission === 'granted';
+    if (!on && hidden && state !== 'busy') { card.hidden = true; return; }
+    card.hidden = false;
+    var html = '<div class="push-head">🔔 <span>Monday nudge &amp; birthday reminders</span></div>';
+    var sup = pushSupport();
+
+    if (state === 'busy') {
+      html += '<p class="push-text">' + escHtml(note || 'One moment…') + '</p>';
+    } else if (sup === 'ios-install') {
+      html += '<p class="push-text">On iPhone, notifications only work once The 99 is on your Home Screen.</p>' +
+              '<div class="push-actions"><button class="push-btn" data-a="install" type="button">Show me how</button>' +
+              '<button class="push-link" data-a="hide" type="button">Not now</button></div>';
+    } else if (sup === 'denied') {
+      html += '<p class="push-text">Notifications are blocked for this app in your phone’s settings. ' +
+              'Allow them there, then come back.</p>';
+    } else if (sup === 'unsupported') {
+      html += '<p class="push-text">This browser can’t receive notifications.</p>';
+    } else if (on) {
+      html += '<p class="push-text">On for this device.' + (note ? ' ' + escHtml(note) : '') + '</p>' +
+              '<div class="push-actions"><button class="push-btn" data-a="test" type="button">Send me a test</button>' +
+              '<button class="push-link" data-a="off" type="button">Turn off</button></div>';
+    } else {
+      html += '<p class="push-text">A short note on Monday mornings about who needs you, and a ping on ' +
+              'birthday mornings. ' + (note ? '<strong>' + escHtml(note) + '</strong>' : '') + '</p>' +
+              '<div class="push-actions"><button class="push-btn" data-a="on" type="button">Turn on</button>' +
+              '<button class="push-link" data-a="hide" type="button">Not now</button></div>';
+    }
+    card.innerHTML = html + test;
+  }
+
+  card.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-a]');
+    if (!b) return;
+    var a = b.getAttribute('data-a');
+    if (a === 'install') { showIosInstall(); return; }
+    if (a === 'hide') { try { localStorage.setItem(PUSH_HIDE_KEY, '1'); } catch (x) {} hidden = true; draw(); return; }
+    if (a === 'on') {
+      var p = enablePush();                // synchronous call inside the tap — see enablePush
+      draw('busy', 'Turning on…');
+      p.then(function () { hidden = false; draw(null, 'Tap “Send me a test” to check.'); })
+       .catch(function (err) {
+         var m = err.message === 'denied' ? 'You chose Block — allow it in settings to turn this on.'
+               : err.message === 'dismissed' ? 'No problem — tap Turn on whenever you’re ready.'
+               : err.message;
+         draw(null, m);
+       });
+      return;
+    }
+    if (a === 'off') {
+      draw('busy', 'Turning off…');
+      disablePush().then(function () { draw(null, 'Turned off.'); });
+      return;
+    }
+    if (a === 'test') {
+      draw('busy', 'Sending…');
+      api('sendTestPush').then(function (r) {
+        draw(null, r.sent ? 'Sent — it should arrive in a few seconds.' : 'Nothing was sent.');
+      }).catch(function (err) { draw(null, err.message); });
+    }
+  });
+
+  draw();
+  setTimeout(refreshPushToken, 4000);
+}
+
 /* The service worker serves assets cache-first, which is right in production
    and maddening while editing: you change a file, reload, and see the old one.
    So it stays off on localhost unless you ask for it with ?sw=1 — which you
@@ -697,6 +884,10 @@ function isStandalone() {
  */
 function isIos() {
   var ua = navigator.userAgent || '';
+  // Anything that says Android is not iOS, whatever else it reports. Without
+  // this, a touch device claiming a Mac platform was taken for an iPad and an
+  // Android user was told to "add to Home Screen" before notifications.
+  if (/Android/i.test(ua)) return false;
   return /iPad|iPhone|iPod/.test(ua) ||
          (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 }

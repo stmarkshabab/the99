@@ -17,7 +17,19 @@
     API_URL: 'https://script.google.com/macros/s/AKfycbwYhZknRAJVe8AJcIbsT49UmhtGrdrYBYbjz3lghM-GdMHNFICG-9eS0G0dSUDyK6AYWQ/exec',
 
     // Google Cloud console > Credentials > OAuth client ID (Web application).
-    GOOGLE_CLIENT_ID: '85459451769-pperaup23gefg3etlk2u0q62dve2vp1l.apps.googleusercontent.com'
+    GOOGLE_CLIENT_ID: '85459451769-pperaup23gefg3etlk2u0q62dve2vp1l.apps.googleusercontent.com',
+
+    // Push notifications. Firebase console > Project settings > Your apps (Web).
+    // These are public identifiers, not secrets. Until apiKey, appId and
+    // VAPID_KEY are filled in, the notifications card simply does not appear.
+    FIREBASE: {
+      apiKey: 'AIzaSyCzixlvJ528NC5iszGfShhfV1omk1Xp6ko',
+      projectId: 'the99-followup',
+      messagingSenderId: '85459451769',
+      appId: '1:85459451769:web:f6795b3c9f3fba369879a8'
+    },
+    // Firebase console > Project settings > Cloud Messaging > Web Push certificates.
+    VAPID_KEY: 'BMvSiXP0-GV3BoutvKWQj8SFyljIL1C4SY3axTkPu_PVs2DmRkBM_Sm1tbuG3ROTxHNGPoOvJddQrEMV1VwS5-U'
   };
 
   var LOCAL = {
@@ -26,7 +38,9 @@
     // of the ministry's real sheet. Until you set one up it stays on LIVE,
     // which is fine for looking at layout but means test writes are real.
     API_URL: LIVE.API_URL,
-    GOOGLE_CLIENT_ID: LIVE.GOOGLE_CLIENT_ID
+    GOOGLE_CLIENT_ID: LIVE.GOOGLE_CLIENT_ID,
+    FIREBASE: LIVE.FIREBASE,
+    VAPID_KEY: LIVE.VAPID_KEY
   };
 
   window.APP_CONFIG = isLocal ? LOCAL : LIVE;
