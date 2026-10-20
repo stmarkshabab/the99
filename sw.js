@@ -3,7 +3,7 @@
    never cached: every API call goes to the network so the sheet stays the
    single source of truth and nobody acts on a stale flock. */
 
-var VERSION = 'the99-v15';
+var VERSION = 'the99-v16';
 var SHELL = [
   'index.html',
   'shepherds.html',
@@ -21,7 +21,11 @@ self.addEventListener('install', function (e) {
   e.waitUntil(
     caches.open(VERSION).then(function (c) {
       // Add one at a time: addAll is all-or-nothing and one 404 would break install.
-      return Promise.all(SHELL.map(function (u) { return c.add(u).catch(function () {}); }));
+      // cache: 'reload' skips the browser's own 10-minute copy, which would
+      // otherwise put the old files into the new version's cache.
+      return Promise.all(SHELL.map(function (u) {
+        return c.add(new Request(u, { cache: 'reload' })).catch(function () {});
+      }));
     }).then(function () { return self.skipWaiting(); })
   );
 });
@@ -62,7 +66,7 @@ self.addEventListener('fetch', function (e) {
   // Static shell: cache first, refreshed in the background.
   e.respondWith(
     caches.match(req).then(function (hit) {
-      var network = fetch(req).then(function (res) {
+      var network = fetch(req, { cache: 'no-cache' }).then(function (res) {
         if (res && res.status === 200) {
           var copy = res.clone();
           caches.open(VERSION).then(function (c) { c.put(req, copy); });

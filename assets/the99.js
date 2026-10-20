@@ -8,7 +8,7 @@
 
 /* Build marker. Must match the backend's apiVersion (code.gs). Check in the
    console with THE99_BUILD; the backend's is at the /exec URL's "version". */
-var THE99_BUILD = 15;
+var THE99_BUILD = 16;
 window.THE99_BUILD = THE99_BUILD;
 
 var CFG = window.APP_CONFIG || {};
@@ -913,8 +913,24 @@ function mountPushCard(boot) {
     return;
   }
 
+  // A new version takes over in the background; reload once so this visit
+  // runs it, instead of the one after. Not on the very first install.
+  var hadController = !!navigator.serviceWorker.controller;
+  var reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', function () {
+    if (!hadController || reloading) return;
+    reloading = true;
+    location.reload();
+  });
+
   window.addEventListener('load', function () {
-    navigator.serviceWorker.register('sw.js').catch(function () { /* non-fatal */ });
+    navigator.serviceWorker.register('sw.js').then(function (reg) {
+      // An installed app is mostly resumed, not reopened, and resuming
+      // doesn't look for updates by itself.
+      document.addEventListener('visibilitychange', function () {
+        if (document.visibilityState === 'visible') reg.update().catch(function () {});
+      });
+    }).catch(function () { /* non-fatal */ });
   });
 })();
 
