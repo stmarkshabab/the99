@@ -138,6 +138,7 @@ body {
   text-decoration: none; display: inline-flex; align-items: center; gap: 5px;
 }
 .header-btn:active { transform: scale(.96); }
+.header-bell { font-size: 0.8rem; padding: 4px 8px; letter-spacing: 0; }
 
 /* ── NAV (leaders) ──────────────────────────────────────────────────────── */
 

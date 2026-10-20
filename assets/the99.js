@@ -8,7 +8,7 @@
 
 /* Build marker. Must match the backend's apiVersion (code.gs). Check in the
    console with THE99_BUILD; the backend's is at the /exec URL's "version". */
-var THE99_BUILD = 14;
+var THE99_BUILD = 15;
 window.THE99_BUILD = THE99_BUILD;
 
 var CFG = window.APP_CONFIG || {};
@@ -437,9 +437,11 @@ function mountChrome(boot) {
   var tools = document.getElementById('header-tools');
   if (tools) {
     tools.innerHTML =
+      '<button class="header-btn header-bell" id="pushBtn" type="button" hidden aria-label="Reminders">🔔</button>' +
       '<button class="header-btn" id="installBtn" type="button" hidden>Install</button>' +
       '<button class="header-btn" id="signoutBtn" type="button">Sign out</button>';
     document.getElementById('signoutBtn').onclick = function () { Auth.signOut(); };
+    syncPushBtn();
     var ib = document.getElementById('installBtn');
     ib.hidden = !canOfferInstall();
     ib.onclick = doInstall;
@@ -768,6 +770,25 @@ function refreshPushToken() {
 }
 
 /** The card on the flock page. Shown only to people the server says may opt in. */
+/* The header bell. mountChrome can redraw the header at any time (a role
+   change), so the bell's wanted state lives here and is re-applied each time. */
+var pushBtnState = null;     // null = no bell; otherwise { on: bool, click: fn }
+
+function syncPushBtn() {
+  var btn = document.getElementById('pushBtn');
+  if (!btn) return;
+  btn.hidden = !pushBtnState;
+  if (!pushBtnState) return;
+  btn.textContent = pushBtnState.on ? '🔔' : '🔕';
+  btn.title = pushBtnState.on ? 'Reminders are on' : 'Reminders are off';
+  btn.onclick = pushBtnState.click;
+}
+
+/**
+ * The reminders card asks once, then gets out of the way: after "Turn on"
+ * it confirms (with a test button) until "Done", and after "Not now" it
+ * hides. Either way the bell in the header brings it back.
+ */
 function mountPushCard(boot) {
   var card = document.getElementById('pushCard');
   if (!card) return;
@@ -778,34 +799,55 @@ function mountPushCard(boot) {
     ? '<div class="push-test">Test mode — only listed testers receive these.</div>' : '';
   var hidden = false;
   try { hidden = localStorage.getItem(PUSH_HIDE_KEY) === '1'; } catch (e) { /* ignore */ }
+  var open = false;          // opened from the bell
+  var justOn = false;        // turned on a moment ago: show the confirmation
+
+  function isOn() {
+    return !!storedPushToken() && pushSupport() === 'ok' && Notification.permission === 'granted';
+  }
 
   function draw(state, note) {
-    var on = !!storedPushToken() && pushSupport() === 'ok' && Notification.permission === 'granted';
-    if (!on && hidden && state !== 'busy') { card.hidden = true; return; }
-    card.hidden = false;
+    var on = isOn();
+    pushBtnState = { on: on, click: function () { open = !open; justOn = false; draw(); } };
+    syncPushBtn();
+
+    var show = state === 'busy' || open || justOn || (!on && !hidden);
+    card.hidden = !show;
+    if (!show) return;
+
     var html = '<div class="push-head">🔔 <span>Monday nudge &amp; birthday reminders</span></div>';
     var sup = pushSupport();
+    var later = '<button class="push-link" data-a="' + (open ? 'close' : 'hide') + '" type="button">' +
+                (open ? 'Close' : 'Not now') + '</button>';
 
     if (state === 'busy') {
       html += '<p class="push-text">' + escHtml(note || 'One moment…') + '</p>';
     } else if (sup === 'ios-install') {
       html += '<p class="push-text">On iPhone, notifications only work once The 99 is on your Home Screen.</p>' +
               '<div class="push-actions"><button class="push-btn" data-a="install" type="button">Show me how</button>' +
-              '<button class="push-link" data-a="hide" type="button">Not now</button></div>';
+              later + '</div>';
     } else if (sup === 'denied') {
       html += '<p class="push-text">Notifications are blocked for this app in your phone’s settings. ' +
-              'Allow them there, then come back.</p>';
+              'Allow them there, then come back.</p><div class="push-actions">' + later + '</div>';
     } else if (sup === 'unsupported') {
-      html += '<p class="push-text">This browser can’t receive notifications.</p>';
+      html += '<p class="push-text">This browser can’t receive notifications.</p>' +
+              '<div class="push-actions">' + later + '</div>';
+    } else if (on && justOn) {
+      html += '<p class="push-text"><strong>Reminders are on ✓</strong> ' +
+              escHtml(note || 'Tap “Send me a test” to check.') +
+              ' You can change this any time from the 🔔 at the top.</p>' +
+              '<div class="push-actions"><button class="push-btn" data-a="test" type="button">Send me a test</button>' +
+              '<button class="push-link" data-a="close" type="button">Done</button></div>';
     } else if (on) {
       html += '<p class="push-text">On for this device.' + (note ? ' ' + escHtml(note) : '') + '</p>' +
               '<div class="push-actions"><button class="push-btn" data-a="test" type="button">Send me a test</button>' +
-              '<button class="push-link" data-a="off" type="button">Turn off</button></div>';
+              '<button class="push-link" data-a="off" type="button">Turn off</button>' +
+              '<button class="push-link" data-a="close" type="button">Close</button></div>';
     } else {
       html += '<p class="push-text">A short note on Monday mornings about who needs you, and a ping on ' +
               'birthday mornings. ' + (note ? '<strong>' + escHtml(note) + '</strong>' : '') + '</p>' +
               '<div class="push-actions"><button class="push-btn" data-a="on" type="button">Turn on</button>' +
-              '<button class="push-link" data-a="hide" type="button">Not now</button></div>';
+              later + '</div>';
     }
     card.innerHTML = html + test;
   }
@@ -815,11 +857,15 @@ function mountPushCard(boot) {
     if (!b) return;
     var a = b.getAttribute('data-a');
     if (a === 'install') { showIosInstall(); return; }
-    if (a === 'hide') { try { localStorage.setItem(PUSH_HIDE_KEY, '1'); } catch (x) {} hidden = true; draw(); return; }
+    if (a === 'hide') {
+      try { localStorage.setItem(PUSH_HIDE_KEY, '1'); } catch (x) {}
+      hidden = true; open = false; draw(); return;
+    }
+    if (a === 'close') { open = false; justOn = false; draw(); return; }
     if (a === 'on') {
       var p = enablePush();                // synchronous call inside the tap — see enablePush
       draw('busy', 'Turning on…');
-      p.then(function () { hidden = false; draw(null, 'Tap “Send me a test” to check.'); })
+      p.then(function () { hidden = false; open = false; justOn = true; draw(); })
        .catch(function (err) {
          var m = err.message === 'denied' ? 'You chose Block — allow it in settings to turn this on.'
                : err.message === 'dismissed' ? 'No problem — tap Turn on whenever you’re ready.'
@@ -830,6 +876,9 @@ function mountPushCard(boot) {
     }
     if (a === 'off') {
       draw('busy', 'Turning off…');
+      // Someone who just said no shouldn't be asked again on every visit.
+      try { localStorage.setItem(PUSH_HIDE_KEY, '1'); } catch (x) {}
+      hidden = true;
       disablePush().then(function () { draw(null, 'Turned off.'); });
       return;
     }
