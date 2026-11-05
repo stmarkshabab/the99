@@ -16,7 +16,8 @@
 <link rel="preconnect" href="https://script.googleusercontent.com">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400;1,600&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400;1,600&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
+<noscript><link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;0,700;1,400;1,600&family=DM+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet"></noscript>
 <link rel="stylesheet" href="assets/the99.css">
 </head>
 <body>
@@ -99,6 +100,14 @@
     <div class="skeleton-card"><div class="sk h-big w-3q"></div><div class="sk h-small w-half"></div><div class="sk h-small w-full"></div></div>
     <div class="skeleton-card"><div class="sk h-big w-3q"></div><div class="sk h-small w-half"></div><div class="sk h-small w-full"></div></div>
   </div>
+</div>
+
+<!-- ── SPLASH (until the gate or the app appears) ──────────────────────── -->
+<div class="splash" aria-live="polite">
+  <div class="splash-emblem">🐑</div>
+  <div class="splash-brand">The 99</div>
+  <div class="page-loading-ring" role="progressbar" aria-label="Loading"></div>
+  <p class="splash-slow">Still waking up — this can take a few seconds on a slow connection.</p>
 </div>
 
 <div class="reload-overlay" id="reloadOverlay">

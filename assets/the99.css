@@ -195,6 +195,35 @@ body {
   font-size: calc(var(--base) * 0.8125); line-height: 1.6; white-space: pre-line;
 }
 
+/* ── SPLASH ─────────────────────────────────────────────────────────────── */
+
+/* Fills the gap before the page knows who is signed in. No script drives it:
+   it shows while the gate and the app are both hidden, and goes the moment
+   either appears. It sits after them in the page so these selectors can see
+   them. A short delay before it fades in keeps quick tab switches from
+   flickering. */
+.splash {
+  position: fixed; inset: 0; z-index: 50;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; padding: 24px 16px; text-align: center;
+  background: var(--cream);
+  opacity: 0; animation: splashIn .3s ease .25s forwards;
+}
+#gate:not([hidden]) ~ .splash,
+#app:not([hidden]) ~ .splash { display: none; }
+.splash-emblem { font-size: 3rem; filter: drop-shadow(0 3px 10px rgba(212,168,83,0.45)); }
+.splash-brand {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 2.1rem; font-weight: 700; color: var(--bark); letter-spacing: 3px; line-height: 1;
+}
+.splash .page-loading-ring { margin-top: 26px; width: 40px; height: 40px; }
+.splash-slow {
+  margin-top: 18px; max-width: 18rem;
+  font-size: calc(var(--base) * 0.8125); line-height: 1.5; color: var(--clay);
+  opacity: 0; animation: splashIn .4s ease 8s forwards;
+}
+@keyframes splashIn { to { opacity: 1; } }
+
 /* ── LOADING & SKELETON ─────────────────────────────────────────────────── */
 
 .page-loading, .loading-screen {
