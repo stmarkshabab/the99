@@ -8,7 +8,7 @@
 
 /* Build marker. Must match the backend's apiVersion (code.gs). Check in the
    console with THE99_BUILD; the backend's is at the /exec URL's "version". */
-var THE99_BUILD = 17;
+var THE99_BUILD = 19;
 window.THE99_BUILD = THE99_BUILD;
 
 var CFG = window.APP_CONFIG || {};
@@ -375,8 +375,8 @@ function requireServant(opts) {
             'to sign in again on every page.\n\n' +
             'In the Apps Script editor: paste the current code.gs, then\n' +
             'Deploy > Manage deployments > edit > Version: New version > Deploy.' +
-            (boot.apiVersion ? '\n\nBackend reports version ' + boot.apiVersion + ', expected 11.'
-                             : '\n\nBackend reports no version, expected 11.'));
+            (boot.apiVersion ? '\n\nBackend reports version ' + boot.apiVersion + ', expected 12.'
+                             : '\n\nBackend reports no version, expected 12.'));
           return;
         }
 
@@ -815,7 +815,7 @@ function mountPushCard(boot) {
     card.hidden = !show;
     if (!show) return;
 
-    var html = '<div class="push-head">🔔 <span>Monday nudge &amp; birthday reminders</span></div>';
+    var html = '<div class="push-head">🔔 <span>Friday nudge &amp; birthday reminders</span></div>';
     var sup = pushSupport();
     var later = '<button class="push-link" data-a="' + (open ? 'close' : 'hide') + '" type="button">' +
                 (open ? 'Close' : 'Not now') + '</button>';
@@ -844,7 +844,7 @@ function mountPushCard(boot) {
               '<button class="push-link" data-a="off" type="button">Turn off</button>' +
               '<button class="push-link" data-a="close" type="button">Close</button></div>';
     } else {
-      html += '<p class="push-text">A short note on Monday mornings about who needs you, and a ping on ' +
+      html += '<p class="push-text">A short note on Friday mornings about who needs you, and a ping on ' +
               'birthday mornings. ' + (note ? '<strong>' + escHtml(note) + '</strong>' : '') + '</p>' +
               '<div class="push-actions"><button class="push-btn" data-a="on" type="button">Turn on</button>' +
               later + '</div>';

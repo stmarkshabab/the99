@@ -547,6 +547,11 @@ body {
 .notes-save-btn:disabled { opacity: .5; cursor: not-allowed; }
 .notes-save-btn:active { transform: scale(.97); }
 
+/* Leader only: move a youth to another servant. Select and button share a row. */
+.assign-row { display: flex; gap: 10px; margin-top: 6px; width: 100%; align-items: stretch; }
+.assign-row .follow-select { flex: 1; min-width: 0; padding: 13px 14px; }
+.assign-row .notes-save-btn { width: auto; flex: 0 0 auto; padding: 13px 20px; }
+
 /* ── SOCIAL & ACTIONS ───────────────────────────────────────────────────── */
 
 .social-row { display: flex; gap: 8px; padding: 10px 0 4px; border-bottom: 1px solid rgba(0,0,0,.05); flex-wrap: wrap; }

@@ -225,9 +225,14 @@ function setup() {
       }
       ok('Registered devices', String(readDevices().length));
       var trig = ScriptApp.getProjectTriggers().map(function (t) { return t.getHandlerFunction(); });
-      var have = ['sendMondayNudge', 'sendBirthdayPing'].filter(function (h) { return trig.indexOf(h) !== -1; });
-      if (have.length === 2) ok('Push schedule', 'Monday 9:00 nudge, daily 8:00 birthdays');
-      else note('Push schedule', 'not installed — run installPushTriggers once');
+      var have = ['sendWeeklyNudge', 'sendBirthdayPing'].filter(function (h) { return trig.indexOf(h) !== -1; });
+      if (trig.indexOf('sendMondayNudge') !== -1) {
+        bad('Push schedule', 'still on the old Monday schedule — run installPushTriggers to move it to ' + nudgeWhen());
+      } else if (have.length === 2) {
+        ok('Push schedule', nudgeWhen() + ' nudge, daily ' + BIRTHDAY_HOUR + ':00 birthdays');
+      } else {
+        note('Push schedule', 'not installed — run installPushTriggers once');
+      }
     }
   } catch (e) {
     bad('Push', e.message);
@@ -246,7 +251,7 @@ function setup() {
 
 function doGet(e) {
   if (!e || !e.parameter || !e.parameter.action) {
-    return json({ ok: true, service: 'the99-api', version: 11 });
+    return json({ ok: true, service: 'the99-api', version: 12 });
   }
   return handle(e.parameter);
 }
@@ -273,6 +278,7 @@ function handle(req) {
       case 'flock':       data = getFlock(user, payload); break;
       case 'logFollowup': data = logFollowUp(user, payload); break;
       case 'updateNotes': data = updateNotes(user, payload); break;
+      case 'reassignYouth': data = reassignYouth(user, payload); break;
       case 'dashboard':   data = getDashboardData(user); break;
       case 'shepherds':   data = getShepherds(user); break;
       case 'registerPush':   data = registerPush(user, payload); break;
@@ -554,7 +560,7 @@ function requireMainLeader(user) {
 
 function bootstrap(user) {
   return {
-    apiVersion: 11,
+    apiVersion: 12,
     user: {
       name: user.name,
       email: user.email,
@@ -589,6 +595,14 @@ function bootstrap(user) {
  *   view 'unassigned'  youths with no Servant_Name          (leader only)
  */
 function getFlock(user, payload) {
+  var res = flockFor(user, payload);
+  // The ministry leader can move a youth to another servant from any card,
+  // so their flock arrives with the names to choose from.
+  if (user.role === 'leader') res.servants = servantNames();
+  return res;
+}
+
+function flockFor(user, payload) {
   var view = String(payload.view || '').trim();
   var who = String(payload.servant || '').trim();
 
@@ -747,6 +761,61 @@ function updateNotes(user, payload) {
   } finally {
     lock.releaseLock();
   }
+}
+
+/**
+ * Moves a youth to another servant's flock — the ministry leader only. An
+ * empty servant takes them out of every flock and back to "No servant yet".
+ * Past reach-outs stay under whoever made them; only who follows up next
+ * changes.
+ */
+function reassignYouth(user, payload) {
+  requireMainLeader(user);
+  var youthId = String(payload.youthId || '').trim();
+  if (!youthId) throw httpError(400, 'Missing youthId');
+
+  // Write the name exactly as the Servants sheet spells it: flocks are
+  // matched on it, and a stray capital would leave the youth in no one's.
+  var wanted = String(payload.servant == null ? '' : payload.servant).trim();
+  var servant = '';
+  if (wanted) {
+    var names = servantNames();
+    for (var i = 0; i < names.length; i++) {
+      if (names[i].toLowerCase() === wanted.toLowerCase()) { servant = names[i]; break; }
+    }
+    if (!servant) throw httpError(400, '"' + wanted + '" is not on the Servants sheet.');
+  }
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(15000)) throw httpError(503, 'The sheet is busy — please try again.');
+  try {
+    // Live read inside the lock, as in updateNotes: this writes by row number.
+    var youth = findYouth(youthId, true);
+    if (!youth) throw httpError(404, "Youth_ID '" + youthId + "' not found in sheet.");
+
+    var col = pick(table(SHEETS.youths).index, ['Servant_Name']);
+    if (col == null) throw httpError(500, "Column 'Servant_Name' not found in sheet.");
+
+    sheetByName(SHEETS.youths).getRange(youth.rowNumber, col + 1).setValue(servant);
+    invalidate(SHEETS.youths);
+    return { youthId: youth.youthId, youthName: youth.fullName,
+             servant: servant, previous: youth.servantName };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Every servant's name from the Servants sheet, A–Z. */
+function servantNames() {
+  var t = cachedTable(SHEETS.servants);
+  var iName = pick(t.index, ['Full_Name', 'Full Name', 'Name']);
+  if (iName == null) return [];
+  var seen = {}, out = [];
+  t.rows.forEach(function (r) {
+    var n = String(r[iName] || '').trim();
+    if (n && !seen[n.toLowerCase()]) { seen[n.toLowerCase()] = true; out.push(n); }
+  });
+  return out.sort(function (a, b) { return a.localeCompare(b); });
 }
 
 /**
@@ -939,7 +1008,7 @@ function getShepherds(user) {
 }
 
 // ===========================================================================
-// Push notifications (Firebase Cloud Messaging) — Monday nudge, birthday ping
+// Push notifications (Firebase Cloud Messaging) — weekly nudge, birthday ping
 // ===========================================================================
 //
 // Script properties:
@@ -959,6 +1028,16 @@ function getShepherds(user) {
 var DEVICES_SHEET = 'Devices';
 var DEVICE_HEADERS = ['Email', 'Token', 'Platform', 'Added'];
 var WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+/* When the weekly nudge goes out (Cairo time). Change these, paste, and run
+   installPushTriggers again — nothing else needs to know the day. */
+var NUDGE_DAY  = 'FRIDAY';     // a ScriptApp.WeekDay name: MONDAY … SUNDAY
+var NUDGE_HOUR = 9;            // 0–23
+var BIRTHDAY_HOUR = 8;
+
+function nudgeWhen() {
+  return NUDGE_DAY.charAt(0) + NUDGE_DAY.slice(1).toLowerCase() + ' ' + NUDGE_HOUR + ':00';
+}
 
 function pushSettings() {
   var mode = String(prop('PUSH_MODE') || 'test').trim().toLowerCase();
@@ -1016,7 +1095,7 @@ function nameList(names, max) {
 var KIND_URL = { flock: 'index.html', 'class': 'index.html?view=class', ministry: 'shepherds.html' };
 
 /**
- * The Monday nudge. youths: [{first, days, birth:{y,m,d}}]. Returns null when
+ * The weekly nudge. youths: [{first, days, birth:{y,m,d}}]. Returns null when
  * there is genuinely nothing to say, so nobody is pinged for an empty week.
  */
 function buildNudge(kind, youths, today, extra) {
@@ -1309,7 +1388,7 @@ function runPush(which) {
         ? { title: 'TEST' + who + ' — ' + msg.title, body: msg.body, url: msg.url, tag: msg.tag }
         : { title: 'TEST' + who + ' — nothing to send',
             body: (stand ? stand.name : 'You') + ' would get no ' +
-                  (which === 'nudge' ? 'Monday nudge' : 'birthday ping') + ' today.',
+                  (which === 'nudge' ? 'weekly nudge' : 'birthday ping') + ' today.',
             url: 'index.html', tag: which };
     }
     if (!msg) { quiet++; continue; }
@@ -1330,21 +1409,29 @@ function logPush(which, text) {
 }
 
 /** Time-trigger handlers. Safe to run by hand from the editor in test mode. */
-function sendMondayNudge() { return runPush('nudge'); }
+function sendWeeklyNudge() { return runPush('nudge'); }
 function sendBirthdayPing() { return runPush('birthday'); }
 
-/** Run once from the editor: Monday 9:00 nudge, daily 8:00 birthdays (Cairo). */
+/* The nudge used to be fixed to Mondays under this name. A trigger installed
+   back then still calls it until installPushTriggers is run again, so it stays
+   — doing nothing — rather than failing every Monday. */
+function sendMondayNudge() {
+  return logPush('nudge', 'old Monday schedule — skipped. Run installPushTriggers to move it to ' + nudgeWhen() + '.');
+}
+
+/** Run once from the editor (and again after changing NUDGE_DAY / NUDGE_HOUR). */
 function installPushTriggers() {
-  var handlers = ['sendMondayNudge', 'sendBirthdayPing'];
+  var handlers = ['sendWeeklyNudge', 'sendMondayNudge', 'sendBirthdayPing'];
   ScriptApp.getProjectTriggers().forEach(function (t) {
     if (handlers.indexOf(t.getHandlerFunction()) !== -1) ScriptApp.deleteTrigger(t);
   });
   var tz = Session.getScriptTimeZone();
-  ScriptApp.newTrigger('sendMondayNudge').timeBased()
-    .onWeekDay(ScriptApp.WeekDay.MONDAY).atHour(9).inTimezone(tz).create();
+  ScriptApp.newTrigger('sendWeeklyNudge').timeBased()
+    .onWeekDay(ScriptApp.WeekDay[NUDGE_DAY]).atHour(NUDGE_HOUR).inTimezone(tz).create();
   ScriptApp.newTrigger('sendBirthdayPing').timeBased()
-    .everyDays(1).atHour(8).inTimezone(tz).create();
-  Logger.log('Installed: Monday nudge at 9:00 and birthday ping daily at 8:00 (' + tz + ').');
+    .everyDays(1).atHour(BIRTHDAY_HOUR).inTimezone(tz).create();
+  Logger.log('Installed: weekly nudge ' + nudgeWhen() + ' and birthday ping daily at ' +
+             BIRTHDAY_HOUR + ':00 (' + tz + ').');
 }
 
 // ===========================================================================
@@ -1464,8 +1551,9 @@ function table(name) {
   return { headers: headers, index: index, rows: values.slice(1) };
 }
 
-function findYouth(youthId) {
-  var t = cachedTable(SHEETS.youths);
+/** fresh: read the sheet itself, not the cache — for anything writing by row. */
+function findYouth(youthId, fresh) {
+  var t = fresh ? table(SHEETS.youths) : cachedTable(SHEETS.youths);
   for (var r = 0; r < t.rows.length; r++) {
     if (String(t.rows[r][t.index.Youth_ID] || '').trim() === youthId) {
       return {

@@ -290,12 +290,12 @@ Then remember: **bump `VERSION` in `sw.js` whenever a file in `assets/` changed*
 or phones keep the old copy. And give GitHub Pages a few minutes — its CDN
 caches for 10 minutes, so the site can lag behind the repo.
 
-## Push notifications — Monday nudge and birthday ping
+## Push notifications — Friday nudge and birthday ping
 
 Free: Firebase Cloud Messaging on Firebase's no-card Spark plan, sent from
 this Apps Script on a timer. Opt-in per device.
 
-- **Monday 9:00** — each servant: who in their flock is wandering or lost, and
+- **Friday 9:00** — each servant: who in their flock is wandering or lost, and
   birthdays this week. A class leader with no flock of their own hears about
   their class; the ministry leader gets the ministry totals. A servant with
   nothing to report is not pinged.
@@ -314,7 +314,11 @@ this Apps Script on a timer. Opt-in per device.
 In test mode the *Turn on notifications* card is shown **only** to the emails in
 `PUSH_TEST_EMAILS`, and the senders deliver **only** to those people's devices.
 Every test notification starts with `TEST`, and a week with nothing to say still
-sends you *"… would get no Monday nudge"* so you can see silence is working.
+sends you *"… would get no weekly nudge"* so you can see silence is working.
+
+The day and hour are `NUDGE_DAY` / `NUDGE_HOUR` near the top of the push
+section in `code.gs`. After changing them, paste and run `installPushTriggers`
+again (no redeploy needed for the schedule itself).
 
 ### One-time setup
 
@@ -344,7 +348,7 @@ Treat it like a password.
 
 On your phone (iPhone: from the Home Screen icon), open the app, tap
 **Turn on**, then **Send me a test**. Then in the Apps Script editor run
-`sendMondayNudge` and `sendBirthdayPing` — in test mode they only reach you.
+`sendWeeklyNudge` and `sendBirthdayPing` — in test mode they only reach you.
 
 ### Going live
 

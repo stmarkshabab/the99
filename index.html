@@ -122,6 +122,8 @@
   var FLOCK = [];          // every youth in this flock
   var SERVANT_NAME = '';   // whose flock is on screen
   var CAN_EDIT = false;    // own flock, or a leader
+  var IS_LEADER = false;   // the ministry leader: may move youths between servants
+  var SERVANTS = [];       // names to move to; sent with the leader's flock only
   var stateFilter = '';    // '', 'ok', 'warn', 'late' — driven by the chips
 
   setRandomVerse();
@@ -145,6 +147,7 @@
   requireServant(gate).then(function (ctx) {
     var role = ctx.boot.user.role || (ctx.boot.user.isLeader ? 'leader' : 'servant');
     mountPushCard(ctx.boot);
+    IS_LEADER = role === 'leader';
     var head = document.querySelector('.header-servant');
 
     if (VIEW === 'all') {
@@ -190,6 +193,7 @@
     apiCached(cacheKey, 'flock', request,
       function (data) {
         FLOCK = data.youths || [];
+        if (data.servants) SERVANTS = data.servants;
         if (onHeader) onHeader(data);
         document.getElementById('filterBar').hidden = FLOCK.length === 0;
         populateFilters();
@@ -298,12 +302,11 @@
 
     var banner = document.getElementById('lostBanner');
     if (VIEW === 'unassigned' && FLOCK.length) {
-      // Nobody is going after these yet — the action here is to assign, and
-      // that happens in the sheet, not the app.
+      // Nobody is going after these yet — the action here is to assign.
       banner.hidden = false;
       document.getElementById('lostBannerText').textContent =
         FLOCK.length + (FLOCK.length === 1 ? ' youth has' : ' youths have') +
-        ' no servant. Fill in Servant_Name in the sheet and each one moves to that flock.';
+        ' no servant. Open a card and choose one under Servant to move them into that flock.';
     } else if (late > 0) {
       banner.hidden = false;
       document.getElementById('lostBannerText').textContent =
@@ -381,7 +384,8 @@
     if (sentinelObserver) { sentinelObserver.disconnect(); sentinelObserver = null; }
 
     if (!FLOCK.length) {
-      container.innerHTML = '<div class="empty-state"><div class="icon">🐑</div><p>No youth assigned yet.</p></div>';
+      container.innerHTML = '<div class="empty-state"><div class="icon">🐑</div><p>' +
+        (VIEW === 'unassigned' ? 'Every youth has a servant.' : 'No youth assigned yet.') + '</p></div>';
       document.getElementById('filterCount').textContent = '';
       return;
     }
@@ -537,7 +541,8 @@
             infoItem('Talent',          youth.Talent) +
             infoItem('Talent Category', youth.Talent_Category) +
             '<div class="info-section-title">Follow-Up</div>' +
-            (BIG_VIEW ? infoItem('Servant', String(youth.Servant_Name || '').trim() || '— none —') : '') +
+            (IS_LEADER ? assignHtml(youth, index)
+              : BIG_VIEW ? infoItem('Servant', String(youth.Servant_Name || '').trim() || '— none —') : '') +
             infoItem('Last Contact', formatDate(youth.Latest_Followup)) +
             notesHtml +
           '</div>' +
@@ -552,6 +557,30 @@
 
   // The list only ever needs the header; the body is fetched when opened.
   function cardHtml(youth, index) { return cardParts(youth, index).head; }
+
+  /* The leader's "move to another servant" control. A name in the sheet that
+     is not on the Servants list (a typo, someone who left) is still offered,
+     so the picker never silently shows the wrong servant. */
+  function assignHtml(youth, index) {
+    var current = String(youth.Servant_Name || '').trim();
+    var names = SERVANTS.slice();
+    if (current && !names.some(function (n) { return n.toLowerCase() === current.toLowerCase(); })) {
+      names.unshift(current);
+    }
+    var opts = '<option value=""' + (current ? '' : ' selected') + '>— No servant —</option>' +
+      names.map(function (n) {
+        return '<option value="' + escHtml(n) + '"' +
+               (n.toLowerCase() === current.toLowerCase() ? ' selected' : '') + '>' + escHtml(n) + '</option>';
+      }).join('');
+    return '<div class="info-item full-item">' +
+             '<div class="info-label">Servant</div>' +
+             '<div class="assign-row">' +
+               '<select class="follow-select" id="assign_' + index + '" dir="auto">' + opts + '</select>' +
+               '<button class="notes-save-btn" id="assignbtn_' + index + '" type="button" ' +
+                 'onclick="reassignYouth(' + index + ')">Move</button>' +
+             '</div>' +
+           '</div>';
+  }
 
   /* ── INFO ROW HELPERS ──────────────────────────────────────────────── */
 
@@ -666,6 +695,59 @@
     }).catch(function (err) {
       showToast('⚠ ' + err.message, '#963232');
       btn.textContent = 'Save Notes';
+      btn.disabled = false;
+    });
+  };
+
+  window.reassignYouth = function (index) {
+    var youth = VISIBLE[index];
+    if (!youth) return;
+    var btn = document.getElementById('assignbtn_' + index);
+    var to = document.getElementById('assign_' + index).value;
+    var from = String(youth.Servant_Name || '').trim();
+    if (!btn || btn.disabled) return;
+    if (to.toLowerCase() === from.toLowerCase()) {
+      showToast('Already ' + (from ? 'with ' + from : 'without a servant'), '#C07A1A');
+      return;
+    }
+    var first = String(youth.Full_Name || '').split(/\s+/)[0];
+    if (!confirm(to ? 'Move ' + youth.Full_Name + ' to ' + to + '\u2019s flock?'
+                    : 'Take ' + youth.Full_Name + ' out of ' + from + '\u2019s flock?')) return;
+
+    btn.disabled = true;
+    btn.textContent = 'Moving…';
+    api('reassignYouth', { youthId: youth.Youth_ID, servant: to }).then(function (r) {
+      youth.Servant_Name = r.servant;
+      // Every list and total that counted this youth is now out of date.
+      clearApiCache();
+      showToast(r.servant ? '🐑 ' + first + ' moved to ' + r.servant
+                          : first + ' now has no servant', '#5A7A5A');
+
+      // Still belongs on this page? Then just correct the card in place, so an
+      // open card and the scroll position stay where they were.
+      var stays = VIEW === 'all' ||
+                  (VIEW === 'unassigned' ? !r.servant
+                   : VIEW === 'class'    ? true
+                   : r.servant.toLowerCase() === SERVANT_NAME.toLowerCase());
+      if (stays) {
+        var tag = document.querySelector('.card[data-i="' + index + '"] .servant-tag');
+        if (tag) {
+          tag.className = 'servant-tag' + (r.servant ? '' : ' servant-tag--none');
+          tag.textContent = r.servant ? '🐑 ' + r.servant : 'No servant assigned';
+        }
+        btn.textContent = 'Moved ✓';
+        setTimeout(function () { btn.textContent = 'Move'; btn.disabled = false; }, 1500);
+        return;
+      }
+      FLOCK = FLOCK.filter(function (y) { return y !== youth; });
+      var count = document.querySelector('.header-servant strong');
+      if (count && BIG_VIEW) count.textContent = FLOCK.length;
+      renderBirthdays();
+      renderSummary();
+      renderCards();
+    }).catch(function (err) {
+      showToast('⚠ ' + err.message, '#963232');
+      btn.textContent = 'Move';
       btn.disabled = false;
     });
   };
